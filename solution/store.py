@@ -70,6 +70,7 @@ class SnapshotIndex:
         self.pages = []
         self.passages = []
         self.rate_rows = []
+        self.prose_rows = []     # rates written in sentences, used only when no table row fits
         self.hours = []
         self.bm25 = None
         self.page_bm25 = None
@@ -79,6 +80,9 @@ class SnapshotIndex:
             self.passages.extend(p.passages)
             for t in p.tables:
                 self.rate_rows.extend(rates.rows_from_table(t))
+            if p.kind != kb.ARTICLE:
+                for psg in p.passages:
+                    self.prose_rows.extend(rates.rows_from_passage(psg))
         self.bm25 = BM25([tokens(p.heading + " " + p.text) for p in self.passages])
         self.page_docs = [p for p in self.pages if p.kind <= kb.PROMO]
         self.page_bm25 = BM25([tokens(" ".join([p.title, p.path.replace("/", " ").replace("-", " ")] +

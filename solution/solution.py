@@ -43,11 +43,22 @@ KIND_WEIGHT = {kb.RATE_SHEET: 1.0, kb.PRODUCT: 1.0, kb.PROMO: 0.8, kb.CALCULATOR
 class DupacoKnowledge:
     def __init__(self):
         self.snaps = []          # SnapshotIndex, oldest first
+        self._last_pages = {}
         self._cache = {}
         self._conflicts = None
 
     # ------------------------------------------------------------------ ingest
     def ingest(self, snapshot: Snapshot) -> None:
+        # Rule I: a snapshot missing more than 30% of the previous one's pages is a partial
+        # update, so pages it doesn't mention are carried over. (Every Dupaco snapshot is a
+        # full crawl, losing at most 8 pages, so nothing is carried over there.)
+        prev = self._last_pages
+        urls = {p.url.rstrip("/") for p in snapshot.pages}
+        if prev:
+            missing = [p for u, p in prev.items() if u not in urls]
+            if len(missing) > 0.3 * len(prev):
+                snapshot = Snapshot(snapshot.snapshot_id, snapshot.taken_on, list(snapshot.pages) + missing)
+        self._last_pages = {p.url.rstrip("/"): p for p in snapshot.pages}
         self.snaps.append(store.build_index(snapshot))
         self.snaps.sort(key=lambda s: s.taken_on)
         self._cache.clear()
@@ -133,13 +144,31 @@ def route(q: str, snap) -> Answer:
 # =============================================================================================
 def rate_answer(q: str, snap) -> Answer:
     rq = rates.parse_query(q)
-    res = rates.select(snap.rate_rows, rq)
+    res = rates.select(snap.rate_rows, rq) or rates.select(snap.prose_rows, rq)
     if res is None:
         return Answer(text="I don't see a published rate for that on Dupaco's website, so I can't quote one. "
                            "Please contact Dupaco directly and a lender can give you a current quote.",
                       confident=False)
-    parts = [f"{r.display}: {r.value_str(rq.metrics)}" for r in res.rows]
+    # Rule J for rates: every product name the member used must be on the rows we quote
+    names = [n.lower() for n in entity_words(q) if len(n) > 2 and not n.isupper()]
+    shown = " ".join(r.display + " " + " ".join(r.table.caption) for r in res.rows).lower()
+    if any(n not in shown for n in names):
+        return Answer(text="I don't see a published rate for that on Dupaco's website, so I can't quote one. "
+                           "Please contact Dupaco directly for current details.", confident=False)
+    # Rule K (expired offer): a product found only on a promo / calculator / article page, while
+    # the official rate sheet for the same family is newer and no longer lists it, has ended.
     t = res.winner_table
+    if t.page.kind > kb.PRODUCT:
+        fam = (rq.products or set(res.rows[0].concepts)) & rates.PRODUCT_NAMES
+        newer = [x.table for x in snap.rate_rows if x.page.kind <= kb.PRODUCT and fam <= x.concepts
+                 and x.effective and (not t.effective or x.effective > t.effective)]
+        if newer:
+            when = f" (effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""
+            return Answer(text="That rate isn't on Dupaco's current rate sheet anymore — it only appears on an older "
+                               f"page{when}, so it may have ended. Please contact Dupaco to confirm current options.",
+                          sources=[Source(url=newer[0].page.url, snapshot_id=snap.snapshot_id)], confident=False,
+                          conflict_note=f"Only {kb.KIND_NAMES[t.page.kind]} {t.page.url} lists it.")
+    parts = [f"{r.display}: {r.value_str(rq.metrics)}" for r in res.rows]
     eff = f" (rates effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""
     text = "; ".join(parts) + eff + "."
     pages = []
@@ -164,7 +193,10 @@ def rate_answer(q: str, snap) -> Answer:
 GENERIC_CAPS = {"dupaco", "lobby", "drive", "drive-up", "what", "when", "where", "do", "does", "are", "is", "can",
                 "could", "the", "i", "how", "which", "all", "branch", "branches", "hours", "saturday", "sunday",
                 "monday", "friday", "atm", "give", "tell", "please", "hi", "hello", "dupaco's", "you", "your", "my",
-                "me", "general", "credit", "union", "office"}
+                "me", "general", "credit", "union", "office", "today", "tuesday", "wednesday", "thursday",
+                "january", "february", "march", "april", "may", "june", "july", "august", "september",
+                "october", "november", "december", "sept", "jan", "feb", "mar", "apr", "jun", "jul", "aug",
+                "oct", "nov", "dec", "now", "currently", "still", "also", "and", "or", "if", "for"}
 
 
 def entity_words(q: str) -> list:
@@ -172,7 +204,8 @@ def entity_words(q: str) -> list:
     words = re.findall(r"[A-Za-z][A-Za-z'’.-]*", q)
     out = []
     for i, w in enumerate(words):
-        if w[0].isupper() and w.lower().strip(".'’") not in GENERIC_CAPS and not (i == 0):
+        acronym = w.rstrip("s").isupper() or w.isupper()          # APRs, CDs, IRA, HSA
+        if w[0].isupper() and not acronym and w.lower().strip(".'’") not in GENERIC_CAPS and not (i == 0):
             out.append(w.strip(".'’"))
     return out
 
@@ -254,21 +287,42 @@ SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z“\"(])")
 WANT_URLS = re.compile(r"\b(online|link|apply|join|sign up|enroll|download|app|where can i)\b", re.I)
 
 
-def _best_sentences(text: str, qt: set, idf: dict, limit: int = 420) -> str:
+def _best_sentences(text: str, qt: set, idf: dict, limit: int = 420, context: str = "") -> str:
+    """Shortest run of sentences that covers the question words this passage contains:
+    take the best sentence, then add the sentence covering the most still-missing words.
+    Words already in the passage's heading are its topic, not the answer, so they don't count
+    (unless nothing else is left)."""
     sents = [s.strip() for s in SENT_SPLIT.split(text) if s.strip()]
     if len(text) <= limit or len(sents) <= 1:
-        return text[:limit]
-    scored = []
-    for i, s in enumerate(sents):
-        st = set(tokens(s))
-        scored.append((sum(idf.get(t, 0) for t in qt & st), -i, i))
-    scored.sort(reverse=True)
-    i = scored[0][2]
-    out = sents[i]
-    j = i + 1
-    while j < len(sents) and len(out) + len(sents[j]) < limit:
-        out += " " + sents[j]
-        j += 1
+        return text[:max(limit, 600)]
+    ctx = set(tokens(context))
+    q_focus = (qt - ctx) if any(t in set(tokens(text)) for t in qt - ctx) else qt
+    toks = [set(tokens(s)) & q_focus for s in sents]
+    present = set().union(*toks)
+    # a question word found in many of this passage's sentences is its topic; one found in a
+    # single sentence points at the answer ("late fee" vs "Platinum Visa")
+    sdf = {t: sum(1 for ts in toks if t in ts) for t in present}
+    w = {t: idf.get(t, 0) / sdf[t] for t in present}
+    picked, covered = [], set()
+    while len(picked) < 3:
+        gain = [(sum(w[t] for t in toks[i] - covered), -i, i) for i in range(len(sents)) if i not in picked]
+        if not gain or gain and max(gain)[0] <= 0:
+            break
+        g, _, i = max(gain)
+        if picked and sum(len(sents[j]) for j in picked) + len(sents[i]) > limit + 180:
+            break
+        picked.append(i)
+        covered |= toks[i]
+        if covered >= present:
+            break
+    if not picked:
+        picked = [0]
+    picked.sort()
+    out = " ".join(sents[i] for i in picked)
+    # keep a short follow-on sentence (often the actual value: "This was the fifth time...")
+    nxt = picked[-1] + 1
+    if nxt < len(sents) and len(out) + len(sents[nxt]) < limit * 0.6:
+        out += " " + sents[nxt]
     return out
 
 
@@ -292,7 +346,8 @@ def _rank_passages(qt: list, snap, top: int = 80) -> list:
         pt = set(tokens(p.heading + " " + p.text))
         cover = sum(idf.get(t, 0) for t in q & pt) / q_w
         lede = 1.3 if p.pos <= 2 else 1.0
-        out.append((s * KIND_WEIGHT[p.page.kind] * (0.4 + 0.6 * cover) * lede, p))
+        stub = 0.5 if len(p.text) < 50 and not re.search(r"\d", p.text) else 1.0   # button / nav labels
+        out.append((s * KIND_WEIGHT[p.page.kind] * (0.4 + 0.6 * cover) * lede * stub, p))
     return out
 
 
@@ -318,6 +373,18 @@ def _count_candidates(noun: str, qt: list, snap, cands: list) -> list:
     return [(s + 1.0, p) for s, p in best]
 
 
+def _passages_naming(names: list, qt: list, snap) -> list:
+    """Passages anywhere in the snapshot that contain every name, ranked by the question."""
+    first = names[0]
+    hits = [i for i, p in enumerate(snap.passages)
+            if all(n in (p.heading + " " + p.text + " " + p.page.title).lower() for n in names)]
+    if not hits:
+        return []
+    rel = dict(snap.bm25.search(qt, top=len(snap.passages)))
+    out = [((rel.get(i, 0.0) + 0.1) * KIND_WEIGHT[snap.passages[i].page.kind], snap.passages[i]) for i in hits]
+    return sorted(out, key=lambda x: -x[0])[:80] if first else out
+
+
 def text_answer(q: str, snap) -> Answer:
     qt = tokens(rewrite_question(q))
     if not qt:
@@ -325,8 +392,19 @@ def text_answer(q: str, snap) -> Answer:
     cands = _rank_passages(qt, snap)
     if not cands:
         return Answer(text=NOT_LISTED, confident=False)
+    # Rule J (from Patrick's pdf-chat-poc "terms" check): a name in the question (a branch, a
+    # program, a product) must appear in the evidence. Keep only passages that contain every name;
+    # if no passage on the site does, say it isn't listed rather than answer about something else.
+    names = [n.lower() for n in entity_words(q) if len(n) > 2 and not n.isupper()]
+    if names:
+        named = [(s, p) for s, p in cands if all(n in (p.heading + " " + p.text + " " + p.page.title).lower() for n in names)]
+        if not named:
+            named = _passages_naming(names, qt, snap)
+        if not named:
+            return Answer(text=NOT_LISTED, confident=False)
+        cands = named
     m = re.search(r"\bhow many\s+(?:of\s+)?(?:dupaco'?s?\s+|your\s+|the\s+)?([a-z-]+)", q.lower())
-    if m:
+    if m and m.group(1) not in ("times", "time", "years", "year"):
         cands = _count_candidates(m.group(1), qt, snap, cands)
     top = max(s for s, _ in cands)
     # Rule G: among passages about equally relevant, the freshest statement wins (a product page
@@ -343,11 +421,12 @@ def text_answer(q: str, snap) -> Answer:
             b = re.sub(r"\((https?://[^)\s]*\d[^)\s]*)\)", "", b)   # drop dated/opaque URLs
         return b
 
-    snippet = _best_sentences(body(best), set(qt), idf)
+    snippet = _best_sentences(body(best), set(qt), idf, context=best.heading)
     # a second strong passage from the same page often completes the answer
     same = [(s, p) for s, p in cands if p.page is best.page and p is not best and s >= 0.6 * best_s]
     if same:
-        extra = _best_sentences(body(max(same, key=lambda x: x[0])[1]), set(qt), idf, limit=380)
+        other = max(same, key=lambda x: x[0])[1]
+        extra = _best_sentences(body(other), set(qt), idf, limit=380, context=other.heading)
         if extra not in snippet:
             snippet = snippet + " " + extra
     if ACCOUNT_SERVICE.search(q):

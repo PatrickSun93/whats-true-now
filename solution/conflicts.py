@@ -48,7 +48,7 @@ def rate_conflicts(snaps) -> list:
     latest = snaps[-1]
     # current winner per row key (rule D)
     groups = defaultdict(list)
-    for r in latest.rate_rows:
+    for r in latest.rate_rows + latest.prose_rows:
         groups[r.key].append(r)
     winners = {k: sorted(rs, key=lambda r: rates._table_rank(r.table))[0] for k, rs in groups.items()}
     out = []
@@ -56,12 +56,14 @@ def rate_conflicts(snaps) -> list:
         # skip rows whose product family is ambiguous (no concepts at all)
         if not win.concepts - {"business"}:
             continue
+        if win.table.index < 0 and not win.terms and not win.amount:
+            continue                              # vague prose ("rates as low as 5%") isn't a fact key
         seen = {}                                 # normalised primary value -> (row, where)
         for r in groups[k]:
             seen.setdefault(rates.norm_value(_primary(r)), (r, f"{kb.KIND_NAMES[r.page.kind]} {r.page.path} ({latest.snapshot_id})"))
         # history on the winning page across snapshots
         for s in snaps[:-1]:
-            for r in s.rate_rows:
+            for r in s.rate_rows + s.prose_rows:
                 if r.key == k and r.page.path == win.page.path:
                     seen.setdefault(rates.norm_value(_primary(r)), (r, f"{r.page.path} in snapshot {s.snapshot_id}"))
         if len(seen) < 2:

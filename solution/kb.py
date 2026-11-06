@@ -236,7 +236,10 @@ def parse_tables(page: PageRec, lines: list) -> list:
                 if raw.startswith("|"):
                     break
                 s = clean_inline(raw)
-                if not raw.startswith(("[", "!", "- ", "* ", "*")) and _is_caption_line(s):
+                tab = re.match(r"^- \[([^\]]{3,60})\]\([^)]*#\)\s*$", raw)   # section tab: "- [Certificate Rates](/rates#)"
+                if tab:
+                    cap.insert(0, tab.group(1))
+                elif not raw.startswith(("[", "!", "- ", "* ", "*")) and _is_caption_line(s):
                     cap.insert(0, s)
                 k -= 1
             # effective date: first "effective as of" after the table, before the next table

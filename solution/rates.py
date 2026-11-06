@@ -210,6 +210,17 @@ def _clean_value(cell: str) -> str:
 def rows_from_table(t: Table) -> list:
     out = []
     caption = " · ".join(t.caption)
+    # a caption that names no product ("Regular", "Special") continues the table above it
+    k = t.index
+
+    def names_family(text):
+        return concepts(text, table_side=True) - {"special"}
+
+    while k > 0 and t.index - k < 3 and not names_family(caption + " " + " ".join(t.header)):
+        k -= 1
+        above = " · ".join(c for c in t.page.tables[k].caption if names_family(c))   # family only, not "Special"
+        if above:
+            caption = f"{above} · {caption}".strip(" ·")
     is_business_page = t.page.path.startswith("/business")
     for cells in t.rows:
         label_parts, values = [], []
@@ -217,7 +228,7 @@ def rows_from_table(t: Table) -> list:
             head = t.header[i] if i < len(t.header) else ""
             if not cell or cell in ("—", "-", "N/A", "None"):
                 continue
-            if "%" in cell and not SKIP_COL.search(head):
+            if "%" in cell and PCT.search(cell) and not SKIP_COL.search(head):
                 values.append((_metric(head, cell), _clean_value(cell)))
             elif SKIP_COL.search(head) or re.fullmatch(r"\$?\s?[\d,]+(\.\d+)?", cell):
                 continue
@@ -288,6 +299,10 @@ def parse_query(q: str) -> RateQuery:
     if products & {"home_equity", "heloc", "home_equity_loan"} and "mortgage" in products \
             and not re.search(r"mortgages?\b", low.replace("second mortgage", "")):
         products.discard("mortgage")
+    if "refinance" in variants and not products:
+        products.add("mortgage")               # a bare "refinance" means a mortgage refinance
+    if re.search(r"\b(15|20|30)[- ]?year\b", low) and not products - {"home_equity"}:
+        products.add("mortgage")               # 15/20/30-year terms are mortgage terms here
     ts = terms(q)
     term = min(ts) if ts else None
     model_year = None
@@ -310,8 +325,19 @@ def parse_query(q: str) -> RateQuery:
     return RateQuery(q, cs, products, variants, term, model_year, amount, metrics, listing)
 
 
+DEPOSIT_PRODUCTS = {"certificate", "savings", "share_savings", "bright", "you_name_it", "holiday", "launchpad",
+                    "high_yield", "money_market", "hsa", "checking", "first_rate", "free_checking", "ira"}
+PAY_INTENT = re.compile(r"\b(pay|pays|paying|earn|earns|earning)\b", re.I)
+
+
 def is_rate_question(q: str) -> bool:
-    return bool(RATE_INTENT.search(q)) and bool(concepts(q, table_side=False) & PRODUCT_NAMES)
+    """Asks for a rate (or what a deposit account pays) AND names a product or variant."""
+    rq = parse_query(q)
+    named = rq.products | (rq.variants - {"business"})
+    if not named:
+        return False
+    plain = re.sub(r"high[- ]?yield", "", q, flags=re.I)
+    return bool(RATE_INTENT.search(plain)) or bool(PAY_INTENT.search(q) and (named & DEPOSIT_PRODUCTS))
 
 
 # ---------------------------------------------------------------------------------------
@@ -325,6 +351,8 @@ def eligible(row: RateRow, rq: RateQuery) -> Optional[float]:
     if rq.term is not None:
         if row.terms and rq.term not in row.terms:
             return None
+        if not row.terms and row.table.index < 0:      # prose without a term can't answer a term question
+            return None
         if rq.term in row.terms:
             score += 3
     if rq.model_year is not None and row.model_years:
@@ -337,7 +365,7 @@ def eligible(row: RateRow, rq: RateQuery) -> Optional[float]:
         if not lo - 0.005 <= rq.amount <= hi + 0.005:
             return None
         score += 3
-    extra = (row.concepts & VARIANT_NAMES) - rq.variants - {"roth", "traditional"}
+    extra = (row.concepts & (VARIANT_NAMES | {"home_equity"})) - rq.variants - rq.products - {"roth", "traditional"}
     if "business" in extra and rq.listing and rq.products == {"visa"}:
         extra = extra - {"business"}     # "what cards do you offer" covers business cards too
     score -= 5 * len(extra)
@@ -382,11 +410,12 @@ def select(all_rows: list, rq: RateQuery, cap: int = 14) -> Optional[RateResult]
     winner = tables[0]
     chosen = [r for r in cands if r.table is winner]
     covered = {r.key for r in chosen}
+    products_shown = {frozenset(r.concepts) for r in chosen}
     for t in tables[1:]:
         if t.page.kind > PRODUCT_KIND:      # only official pages may add products
             continue
         for r in cands:
-            if r.table is t and r.key not in covered:
+            if r.table is t and r.key not in covered and frozenset(r.concepts) not in products_shown:
                 chosen.append(r)
                 covered.add(r.key)
     chosen = chosen[:cap]
@@ -425,3 +454,39 @@ def _vals(r: RateRow) -> tuple:
 def describe_source(t: Table) -> str:
     eff = f", effective {t.effective.strftime('%m/%d/%Y')}" if t.effective else ""
     return f"{KIND_NAMES[t.page.kind]} {t.page.url}{eff}"
+
+
+# ---------------------------------------------------------------------------------------
+# Rates written in prose ("6-month certificate APY: 3.50%"). Used only when no table row fits.
+# ---------------------------------------------------------------------------------------
+EXPIRED = re.compile(r"offer (has )?ended|\bexpired?\b|no longer (available|offered)|\bended\b", re.I)
+METRIC_WORD = re.compile(r"\b(apy|apr|annual percentage (yield|rate)|dividend rate|interest rate|rate)\b", re.I)
+SENT = re.compile(r"(?<=[.!?])\s+(?=[A-Z])|\s+-\s+|\n")
+
+
+def rows_from_passage(psg) -> list:
+    out = []
+    if "%" not in psg.text or psg.page.kind > PRODUCT_KIND + 1:     # rate sheet / product / promo only
+        return out
+    for sent in SENT.split(psg.text):
+        if "%" not in sent or len(sent) > 260 or EXPIRED.search(sent) or not METRIC_WORD.search(sent):
+            continue
+        m = PCT.search(sent)
+        if not m:
+            continue
+        label = sent[:m.start()].strip(" :-–—")
+        label = re.sub(r"\b(apy|apr|is|of|at|annual percentage (yield|rate))\b", " ", label, flags=re.I)
+        label = re.sub(r"\s+", " ", label).strip(" :-–—(")
+        if len(label) < 3:
+            continue
+        low = sent.lower()
+        metric = "apy" if re.search(r"apy|yield", low) else "apr" if re.search(r"\bapr\b|annual percentage rate", low) \
+            else "dividend" if "dividend" in low else "rate"
+        doc = f"{psg.heading} {label}"
+        t = Table(page=psg.page, caption=[psg.heading], header=[], rows=[], effective=None, index=-1 - psg.pos)
+        row = RateRow(table=t, label=label, display=label, values=[(metric, m.group(0).strip())],
+                      concepts=concepts(doc, table_side=True) | ({"business"} if psg.page.path.startswith("/business") else set()),
+                      terms=terms(label), amount=amount_range(label), model_years=model_year_range(label))
+        row.key = (frozenset(row.concepts), frozenset(row.terms), row.amount, _norm_label_words(label), (metric,))
+        out.append(row)
+    return out
