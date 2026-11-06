@@ -41,6 +41,7 @@ We keep **every snapshot**, not just the latest. Each page version is tagged wit
 | **K** | **Expired offers:** a rate that appears only on a promo, calculator or article page is treated as ended when the official rate sheet for that product family is newer and no longer lists it. |
 | **L** | **Structured before searched:** fees, phone numbers, addresses and the routing number are read from the page's own structure (table rows, "Label: value" lines, address cards) into records, and a question of that type is answered from the record whose label covers it; copies are ranked by rule D. If no record fits, the question goes to passage search. Example: "Incoming wire transfer \| $10.00" answers "What is the fee for receiving a wire?" and not the $25 domestic row. |
 | **M** | **A term makes a certificate:** a deposit row with a term in months and an APY is a certificate even if its label doesn't say so ("Regular IRAs — 60 Months" answers "60-month IRA certificate"). |
+| **N** | **A fee nobody states isn't listed:** when a fee question matches no record and the best passage names no amount at all, we say so (`confident=False`) instead of quoting unrelated text. (Refusing whenever the best passage is the fee schedule was tried and dropped: it refused real fees whose wording the records missed.) |
 
 Smaller choices, all visible in the code:
 
@@ -50,7 +51,7 @@ Smaller choices, all visible in the code:
 - Passage ranking multiplies BM25 by the page-kind weight and by the share of question words the passage covers. The first paragraphs of a page get a small boost, and very short button or nav labels are down-weighted.
 - The quoted snippet is the smallest set of sentences that covers the question words. A word found in many sentences of the passage counts as the topic, not the answer.
 - A question that asks how a rate *changed* ("what happened to … between May and September") gets the current value plus what the same page showed before, with both effective dates. Every other question gets the current value only.
-- Fact records: a row with no value is a section label for the rows under it ("Safe-Deposit Box"); a fee schedule's date is read from its file name when the page has none; "largest / cheapest" picks among equally matching rows by amount; negations ("an ATM that isn't Dupaco's") add the word "non" so "Non-Dupaco ATM usage" matches. The organisation's own phone, address and routing number ("Phone: 800-…" on the contact page) answer when the question names nothing more specific.
+- Fact records: a row with no value is a section label for the rows under it ("Safe-Deposit Box"); the same schedule rendered as plain lines ("Official check $5.00* each", how the PDF comes through in the older snapshots) is read the same way; a fee schedule's date is read from its file name when the page has none; "largest / cheapest" picks among equally matching rows by amount; negations ("an ATM that isn't Dupaco's") add the word "non" so "Non-Dupaco ATM usage" matches. The organisation's own phone, address and routing number ("Phone: 800-…" on the contact page) answer when the question names nothing more specific.
 
 ## Conflicts (`conflicts()`)
 
@@ -66,16 +67,16 @@ There are about 36 entries. We keep the list focused rather than listing every n
 
 ## Held-out questions (how we checked the fact records weren't tuned to the practice set)
 
-The practice set has no fee questions and only two contact questions, so we wrote our own before changing the code: 36 seed questions on fees, branches, contact details, per-branch hours, "as of" dates and refusals, each expected string checked in the snapshots, plus 72 paraphrases of them generated with DeepSeek and Claude (test data only, not in the repo). The code was changed looking only at the seed misses; the paraphrases were scored before and after.
+The practice set has no fee questions and only two contact questions, so we wrote our own before changing the code: 39 seed questions on fees, branches, contact details, per-branch hours, "as of" dates and refusals, each expected string checked in the snapshots, plus 72 paraphrases of 36 of them generated with DeepSeek and Claude (test data only, not in the repo). The code was changed looking only at the seed misses; the paraphrases were scored before and after.
 
-| Set | Rules before fact records | With fact records (rule L, M) |
+| Set | Rules before fact records | With fact records (rules L–N) |
 |---|---|---|
 | Practice set (40) | 0.915 | 0.915 |
-| Seed questions (36) | 0.597 | 0.972 |
-| Paraphrases (72) | 0.500 | 0.917 |
-| 30 deliberately reworded passage questions | 9 / 30 | 9 / 30 |
+| Seed questions (39) | 0.60 | 0.97 |
+| Paraphrases (72) | 0.50 | 0.93 |
+| 30 deliberately reworded passage questions | 9 / 30 | 10 / 30 |
 
-What still misses: paraphrases whose wording drops the qualifier ("the cost to get a wire"), words outside the site's vocabulary ("dormant", "notarized", "within the U.S."), and refusals for fees the schedule doesn't list (the passage search finds a nearby fee row instead of saying so).
+What still misses: paraphrases whose wording drops the qualifier ("the cost to get a wire"), and words outside the site's vocabulary ("dormant", "notarized", "within the U.S."), which now get an "isn't listed" instead of a wrong fee.
 
 ## Known misses on the practice set
 

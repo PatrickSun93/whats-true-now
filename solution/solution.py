@@ -136,11 +136,24 @@ URL_Q = re.compile(r"\b(link|url|web ?page|web address|website address)\b", re.I
 def route(q: str, snap, older=()) -> Answer:
     if rates.is_rate_question(q) and not URL_Q.search(q):
         return rate_answer(q, snap, older)
-    if HOURS_Q.search(q) and not re.search(r"\bhour(s)? (of|in)\b", q, re.I):
+    if HOURS_Q.search(q) and not re.search(r"\bhour(s)? (of|in)\b|how many hours|\d+ hours|hours (?:did|do|does|were|of)\b", q, re.I):
         return hours_answer(q, snap)
     if URL_Q.search(q):
         return url_answer(q, snap)
-    return fact_answer(q, snap) or text_answer(q, snap)
+    ans = fact_answer(q, snap)
+    if ans:
+        return ans
+    ans = text_answer(q, snap)
+    if FEE_STRICT.search(q) and facts.question_type(q) == "fee" and ans.confident and not STATES_AMOUNT.search(ans.text):
+        # Rule N: a fee question that no record answers, and whose best passage names no amount, isn't listed
+        return Answer(text="I don't see that fee listed on Dupaco's fee schedule or website, so I can't confirm it. "
+                           "Please contact Dupaco directly for current details.",
+                      sources=ans.sources[:1], confident=False)
+    return ans
+
+
+FEE_STRICT = re.compile(r"\b(fee|fees|charge|charges|charged|cost|costs|price|penalty|surcharge)\b", re.I)   # not "pay" / "how much"
+STATES_AMOUNT = re.compile(r"\$\s?\d|\d+(?:\.\d+)?\s*%|\b(free|no charge|no fee|no fees|no monthly|no annual|no cost|waived|complimentary|at no)\b", re.I)
 
 
 # =============================================================================================
@@ -458,6 +471,10 @@ def _passages_naming(names: list, qt: list, snap) -> list:
     return sorted(out, key=lambda x: -x[0])[:80] if first else out
 
 
+COUNT_NOUN = {"people": "employees", "staff": "employees", "workers": "employees", "team": "employees",
+              "locations": "branch", "offices": "branch", "sites": "branch", "stores": "branch"}
+
+
 def text_answer(q: str, snap) -> Answer:
     qt = tokens(rewrite_question(q))
     if not qt:
@@ -478,7 +495,8 @@ def text_answer(q: str, snap) -> Answer:
         cands = named
     m = re.search(r"\bhow many\s+(?:of\s+)?(?:dupaco'?s?\s+|your\s+|the\s+)?([a-z-]+)", q.lower())
     if m and m.group(1) not in ("times", "time", "years", "year"):
-        cands = _count_candidates(m.group(1), qt, snap, cands)
+        noun = COUNT_NOUN.get(m.group(1), m.group(1))          # "people who work" -> employees
+        cands = _count_candidates(noun, qt, snap, cands)
     top = max(s for s, _ in cands)
     # Rule G: among passages about equally relevant, the freshest statement wins (a product page
     # is "as of the crawl"; an article is as of its publish date).

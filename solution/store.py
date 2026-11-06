@@ -117,6 +117,9 @@ def build_index(snapshot) -> SnapshotIndex:
         idx.pages.append(rec)
         body = kb.main_body(pg.markdown)
         idx.hours.extend(parse_hours(rec, body))
-        idx.facts.extend(facts.facts_from_lines(rec, body.split("\n")))
+        lines = body.split("\n")
+        idx.facts.extend(facts.facts_from_lines(rec, lines))
+        if not rec.tables:
+            idx.facts.extend(facts.facts_from_text_rows(rec, lines))
     idx.finalize()
     return idx

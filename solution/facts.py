@@ -131,9 +131,45 @@ def facts_from_table(t: kb.Table) -> list:
             continue                                # a row labelled "2" is an example, not a fact
         for col, v in vals:
             qual = col if col and not col.lower().startswith("col") else ""
-            attr = "fee" if re.search(r"fee|charge|service|price|cost|schedule|penalt", caption + " " + section + " " + label + " " + col, re.I) else "amount"
+            attr = "fee" if re.search(r"fee|charge|service|price|cost|schedule|penalt",
+                                      " ".join((page.title, page.path, caption, section, label, col)), re.I) else "amount"
             ctx = " ".join(x for x in (page.title, caption, section) if x)
             out.append(Fact(page, label, attr, qual, v, ctx, eff, t.index))
+    return out
+
+
+TEXT_ROW = re.compile(r"^(?P<label>[A-Z(][^$|\n]{2,90}?)\s+(?P<value>(?:\$\s?\d[\d,]*(?:\.\d{1,2})?|Free\b)[^|\n]{0,70})$")
+
+
+def facts_from_text_rows(page: kb.PageRec, lines: list) -> list:
+    """Shape 1b: a fee schedule rendered as plain lines ("Official check $5.00* each"), as the PDF is in
+    the older snapshots. A line with no amount is the section for the lines under it; a line starting
+    with "(" continues the label above. Only pages with at least four such rows count."""
+    rows, section, pending = [], "", ""
+    for raw in lines:
+        s = kb.clean_inline(raw.replace("\\*", "*")).strip()
+        if not s or s.startswith(("|", "*", "#", "-", "•")):
+            continue
+        m = TEXT_ROW.match(s)
+        if m:
+            label = (pending + " " + m.group("label")).strip() if pending else m.group("label").strip()
+            pending = ""
+            if len(re.findall(r"[A-Za-z]", label)) >= 3 and not label.endswith((".", ":")):
+                rows.append((label, m.group("value").strip(), section))
+        elif len(s) < 70 and not s.endswith((".", ":", "?", "!")) and not MONEY.search(s):
+            if s.startswith("(") or (pending and not re.search(r"[A-Z]", s[:1])):
+                pending = (pending + " " + s).strip()          # wrapped label: "Foreign currency exchange fee"
+            else:
+                section, pending = s, (s if re.search(r"\b(fee|inquiry|transfer|charge)\b", s, re.I) and not s.istitle() else "")
+        else:
+            pending = ""
+    if len(rows) < 4:
+        return []
+    eff = _page_effective(page)
+    out = []
+    for i, (label, value, section) in enumerate(rows):
+        attr = "fee" if re.search(r"fee|charge|service|price|cost|schedule|penalt", page.title + " " + section + " " + label, re.I) else "amount"
+        out.append(Fact(page, label, attr, "", value, " ".join(x for x in (page.title, section) if x), eff, 1000 + i))
     return out
 
 
@@ -192,7 +228,7 @@ def finish(facts: list) -> list:
         # an address names its place ("..., Galena, IL"), so the value is part of what can be matched
         extra = f.value if f.attr in ("address", "phone", "services") else ""
         f.doc = set(tokens(f.subject + " " + f.qualifier + " " + f.context + " " + extra))
-        f.key = (f.attr, _norm_key(f.subject), _norm_key(f.qualifier))
+        f.key = ("money" if f.attr in ("fee", "amount") else f.attr, _norm_key(f.subject), _norm_key(f.qualifier))
     return facts
 
 
@@ -218,7 +254,7 @@ TYPE_STOP = {
 SYN = {tokens(k)[0]: tokens(v)[0] for k, v in {
     "receive": "incoming", "receiving": "incoming", "inbound": "incoming", "abroad": "international",
     "overseas": "international", "foreign": "international", "cashier": "official", "personal": "consumer",
-    "bounce": "overdraft", "bounced": "overdraft", "nsf": "overdraft", "yearly": "annual",
+    "bounce": "overdraft", "bounced": "overdraft", "nsf": "overdraft", "yearly": "annual", "counter": "counting",
 }.items()}
 NEGATION = re.compile(r"\b(not|isn't|isnt|aren't|non|other|outside|another|different)\b", re.I)
 SUPERLATIVE = re.compile(r"\b(largest|biggest|most expensive|highest|smallest|cheapest|lowest|least)\b", re.I)
