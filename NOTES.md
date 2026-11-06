@@ -6,7 +6,7 @@ Submission folder: `solution/` (entry point `solution/solution.py`, `build()`).
 python harness/run_eval.py --submission solution --eval eval/public_eval.jsonl
 ```
 
-- **API keys:** none needed. The default is plain Python rules with no network or model calls. An optional DeepSeek layer can be switched on (see below).
+- **API keys:** none needed. The default is plain Python rules with no network or model calls. An optional LLM layer (DeepSeek, or a local Ollama model) can be switched on (see below).
 - **Packages:** none. Standard library only (`requirements.txt` is empty on purpose). Runs on Python 3.9+.
 - **Speed:** loading all five snapshots takes about 4 s. Each answer takes well under 0.1 s.
 - **Consistency:** answers are deterministic and cached per (question, as_of).
@@ -70,9 +70,15 @@ There are about 36 entries. We keep the list focused rather than listing every n
 - **The optional LLM layer's guard rails** come from `pdf-rag-chat-template` (`app/rag.py`): the cite-or-refuse check and `ungrounded_numbers` (every figure must be in a cited passage), plus `expand` (widen a hit with its neighbouring chunks). The prompt follows its `SYSTEM_PROMPT`.
 - Not used, and why: dense or hybrid retrieval with RRF (rank fusion) and cross-encoder reranking, from `healthcare-agentic-rag`. These need a local embedding model download or an API key.
 
-## Optional LLM layer (DeepSeek) — off by default
+## Optional LLM layer (DeepSeek or Ollama) — off by default
 
-`solution/llm.py`. It is used only when **both** `DUPACO_LLM=deepseek` and `DEEPSEEK_API_KEY` are set, either in the environment or in a repo-root `.env` file (git ignores `.env`). Optional settings: `DEEPSEEK_MODEL` (default `deepseek-chat`) and `DEEPSEEK_BASE_URL`. A key alone does not switch it on. The graders' machine may have other model keys set, and the scored run should stay fast and deterministic unless we choose otherwise.
+`solution/llm.py`. It is switched on by `DUPACO_LLM`, set in the environment or in a repo-root `.env` file (git ignores `.env`):
+
+- `DUPACO_LLM=deepseek` plus `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`, and `DEEPSEEK_BASE_URL`).
+- `DUPACO_LLM=ollama` for a local model with no key (optional `OLLAMA_MODEL`, default `gemma4:12b`, and `OLLAMA_BASE_URL`). It uses Ollama's native `/api/chat` with thinking off.
+- `DUPACO_LLM_TIMEOUT` (default 20 s).
+
+A key alone does not switch it on. The graders' machine may have other model keys set, and the scored run should stay fast and deterministic unless we choose otherwise.
 
 When it is on:
 
@@ -82,7 +88,14 @@ When it is on:
 - The model's reply is **kept only if it cites a passage and every figure in it appears in the cited passages or the question.** Otherwise the rule answer is returned unchanged. The rule answer is also returned on `NOT_FOUND`, on a timeout (20 s) and on any error.
 - Only the standard library is used (`urllib`), so `requirements.txt` stays empty.
 
-Expect slower answers when it is on: one API call per passage-search question.
+**Measured on the practice set (11-05, Ollama `gemma4:12b` on a Mac):**
+
+| Mode | Accuracy | p95 answer time | Speed score | Final |
+|---|---|---|---|---|
+| Rules only (default) | 0.915 | 0.05 s | 1.0 | **0.915** |
+| + Ollama gemma4:12b | 0.868 | 20 s (timeouts) | 0.0 | 0.715 |
+
+Passage questions took 5–20 s each with about 4k tokens of context. The model also lost two answers. On dup-087 it dropped "fifth time", and on dup-082 it dropped the join URL. It read better on others (Galena address, routing number, Home$tart), but those already scored 1.0. So the submission runs with the layer **off**. DeepSeek has not been measured yet because there was no key.
 
 ## AI tools used
 

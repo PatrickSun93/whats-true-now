@@ -1,10 +1,11 @@
 """
-Optional LLM layer (DeepSeek). OFF by default.
+Optional LLM layer. OFF by default.
 
-Turned on only when BOTH are set (environment or a repo-root .env file, which git ignores):
-    DUPACO_LLM=deepseek
-    DEEPSEEK_API_KEY=sk-...
-Optional: DEEPSEEK_MODEL (default deepseek-chat), DEEPSEEK_BASE_URL (default https://api.deepseek.com).
+Turned on by DUPACO_LLM (environment or a repo-root .env file, which git ignores):
+    DUPACO_LLM=deepseek   + DEEPSEEK_API_KEY=sk-...   (optional DEEPSEEK_MODEL, DEEPSEEK_BASE_URL)
+    DUPACO_LLM=ollama     local model, no key         (optional OLLAMA_MODEL, default gemma4:12b;
+                                                       OLLAMA_BASE_URL, default http://localhost:11434)
+Optional: DUPACO_LLM_TIMEOUT in seconds (default 20).
 
 What it does: for passage-search answers only (not rates, hours, links or refusals), the model
 rewrites the answer from the passages the rules already ranked, citing them as [n].
@@ -24,7 +25,6 @@ from pathlib import Path
 from typing import Optional
 
 NOT_FOUND = "NOT_FOUND"
-TIMEOUT_S = 20
 
 SYSTEM_PROMPT = f"""You answer a credit-union member's question using ONLY the numbered passages from the credit union's website.
 Rules:
@@ -67,21 +67,38 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(name) or _ENV.get(name) or default
 
 
+def provider() -> str:
+    p = _get("DUPACO_LLM").lower()
+    if p == "deepseek" and _get("DEEPSEEK_API_KEY"):
+        return p
+    return "ollama" if p == "ollama" else ""
+
+
 def enabled() -> bool:
-    return _get("DUPACO_LLM").lower() == "deepseek" and bool(_get("DEEPSEEK_API_KEY"))
+    return bool(provider())
+
+
+def _post(url: str, payload: dict, headers: dict) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    with urllib.request.urlopen(req, timeout=float(_get("DUPACO_LLM_TIMEOUT", "20"))) as r:
+        return json.loads(r.read().decode("utf-8"))
 
 
 def chat(messages: list) -> Optional[str]:
-    """One chat completion; None on any failure."""
-    body = json.dumps({"model": _get("DEEPSEEK_MODEL", "deepseek-chat"), "messages": messages,
-                       "temperature": 0, "max_tokens": 350, "stream": False}).encode("utf-8")
-    req = urllib.request.Request(_get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
-                                 data=body, method="POST",
-                                 headers={"Content-Type": "application/json",
-                                          "Authorization": "Bearer " + _get("DEEPSEEK_API_KEY")})
+    """One chat completion at temperature 0; None on any failure."""
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        if provider() == "ollama":
+            # native API so thinking can be switched off (otherwise a reasoning model spends seconds on it)
+            data = _post(_get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat",
+                         {"model": _get("OLLAMA_MODEL", "gemma4:12b"), "messages": messages, "stream": False,
+                          "think": False, "options": {"temperature": 0, "seed": 0, "num_predict": 350, "num_ctx": 8192}},
+                         {})
+            return (data["message"]["content"] or "").strip()
+        data = _post(_get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
+                     {"model": _get("DEEPSEEK_MODEL", "deepseek-chat"), "messages": messages,
+                      "temperature": 0, "max_tokens": 350, "stream": False},
+                     {"Authorization": "Bearer " + _get("DEEPSEEK_API_KEY")})
         return (data["choices"][0]["message"]["content"] or "").strip()
     except Exception:
         return None

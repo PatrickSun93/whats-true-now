@@ -446,7 +446,7 @@ def text_answer(q: str, snap) -> Answer:
 
 
 def _llm_rewrite(q: str, best, cands: list, snap) -> Optional[Answer]:
-    """Optional (llm.py): let DeepSeek phrase the answer from the passages the rules ranked,
+    """Optional (llm.py): let the model (DeepSeek or local Ollama) phrase the answer from the passages the rules ranked,
     the rules' pick first. Ungrounded or uncited replies are discarded by llm.grounded_answer."""
     chosen, seen = [best], {id(best)}
     for s, p in sorted(cands, key=lambda x: -x[0]):
