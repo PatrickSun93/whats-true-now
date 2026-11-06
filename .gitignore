@@ -1,8 +1,12 @@
 docs/
 kit/
-snapshots/
+# website data must not be redistributed: keep only snapshots/README.md
+snapshots/0*
 snapshots_zip/
+results/
 .env
 *.key
 __pycache__/
+*.pyc
+.DS_Store
 .venv/
