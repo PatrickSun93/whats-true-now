@@ -6,7 +6,7 @@ Submission folder: `solution/` (entry point `solution/solution.py`, `build()`).
 python harness/run_eval.py --submission solution --eval eval/public_eval.jsonl
 ```
 
-- **API keys:** none. No network calls, no model calls. Everything is plain Python rules.
+- **API keys:** none needed. The default is plain Python rules with no network or model calls. An optional DeepSeek layer can be switched on (see below).
 - **Packages:** none. Standard library only (`requirements.txt` is empty on purpose). Runs on Python 3.9+.
 - **Speed:** loading all five snapshots takes about 4 s. Each answer takes well under 0.1 s.
 - **Consistency:** answers are deterministic and cached per (question, as_of).
@@ -67,18 +67,22 @@ There are about 36 entries. We keep the list focused rather than listing every n
 ## What we borrowed
 
 - **Rule J** comes from Patrick's `pdf-rag-chat-template` (the `terms` check in `app/confidence.py`: names in an answer must be in the cited passages). It is adapted here to refuse at retrieval time.
-- Not used, and why:
-  - Dense or hybrid retrieval with RRF (rank fusion) and cross-encoder reranking, from `healthcare-agentic-rag`: these need a local embedding model download or an API key.
-  - The LLM answer step from `pdf-rag-chat-template`: no API key is assumed (see below).
+- **The optional LLM layer's guard rails** come from `pdf-rag-chat-template` (`app/rag.py`): the cite-or-refuse check and `ungrounded_numbers` (every figure must be in a cited passage), plus `expand` (widen a hit with its neighbouring chunks). The prompt follows its `SYSTEM_PROMPT`.
+- Not used, and why: dense or hybrid retrieval with RRF (rank fusion) and cross-encoder reranking, from `healthcare-agentic-rag`. These need a local embedding model download or an API key.
 
-## Optional LLM layer
+## Optional LLM layer (DeepSeek) — off by default
 
-None is included. The graders' environment may have `ANTHROPIC_API_KEY` set (the scorer's `--judge` uses it), so an LLM path that switched itself on whenever a key exists would silently change speed and determinism. If one is added later, it should:
+`solution/llm.py`. It is used only when **both** `DUPACO_LLM=deepseek` and `DEEPSEEK_API_KEY` are set, either in the environment or in a repo-root `.env` file (git ignores `.env`). Optional settings: `DEEPSEEK_MODEL` (default `deepseek-chat`) and `DEEPSEEK_BASE_URL`. A key alone does not switch it on. The graders' machine may have other model keys set, and the scored run should stay fast and deterministic unless we choose otherwise.
 
-- be opt-in with its own flag;
-- call the model at temperature 0, with answers cached;
-- only rephrase the rule-selected evidence;
-- reject any answer containing a figure that isn't in that evidence, falling back to the rule answer (the `ungrounded_numbers` check from `pdf-rag-chat-template`).
+When it is on:
+
+- It is used only for passage-search answers. Rates, hours, links and "not listed" refusals stay rule-based.
+- The model sees the passages the rules already ranked, the rules' pick first. Each hit is widened with up to 3 neighbouring passages from the same page. Each passage is labelled with its page kind and the date it was true, and the model is told to apply rules A and G.
+- It runs at temperature 0, with one call per question. Answers are cached per question, so a repeated question gets the same answer.
+- The model's reply is **kept only if it cites a passage and every figure in it appears in the cited passages or the question.** Otherwise the rule answer is returned unchanged. The rule answer is also returned on `NOT_FOUND`, on a timeout (20 s) and on any error.
+- Only the standard library is used (`urllib`), so `requirements.txt` stays empty.
+
+Expect slower answers when it is on: one API call per passage-search question.
 
 ## AI tools used
 
@@ -94,5 +98,6 @@ The code, the rule design and these notes were written with **Claude Code** (Ant
 | `solution/store.py` | per-snapshot index (passages + BM25, rate rows, hour blocks) |
 | `solution/search.py` | tokenizer, synonyms, BM25 |
 | `solution/conflicts.py` | the contradictions list |
+| `solution/llm.py` | optional DeepSeek rewrite with grounding checks (off by default) |
 
 The snapshot data is not in this repository (it may not be redistributed). Put the kit's `snapshots_zip/` next to `harness/`; the scorer unpacks it on its first run.

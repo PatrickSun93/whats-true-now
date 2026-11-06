@@ -28,6 +28,7 @@ from contract import Answer, Conflict, Snapshot, Source  # noqa: E402
 
 import conflicts as conflict_mod  # noqa: E402
 import kb  # noqa: E402
+import llm  # noqa: E402
 import rates  # noqa: E402
 import store  # noqa: E402
 from search import rewrite_question, tokens  # noqa: E402
@@ -437,4 +438,41 @@ def text_answer(q: str, snap) -> Answer:
             break
         if p.page.url not in [x.url for x in srcs]:
             srcs.append(Source(url=p.page.url, snapshot_id=snap.snapshot_id))
+    if llm.enabled():
+        better = _llm_rewrite(q, best, cands, snap)
+        if better:
+            return better
     return Answer(text=snippet, sources=srcs, confident=True)
+
+
+def _llm_rewrite(q: str, best, cands: list, snap) -> Optional[Answer]:
+    """Optional (llm.py): let DeepSeek phrase the answer from the passages the rules ranked,
+    the rules' pick first. Ungrounded or uncited replies are discarded by llm.grounded_answer."""
+    chosen, seen = [best], {id(best)}
+    for s, p in sorted(cands, key=lambda x: -x[0]):
+        if len(chosen) >= 6:
+            break
+        if id(p) not in seen and p.text not in {c.text for c in chosen}:
+            chosen.append(p)
+            seen.add(id(p))
+    # widen each hit with up to 3 passages either side on the same page and merge windows that
+    # touch (pdf-rag-chat-template's `expand`), so a fact one section away comes along
+    windows = []                                # [page, set(pos)]
+    for p in chosen:
+        span = set(range(max(0, p.pos - 3), p.pos + 4))
+        hit = next((w for w in windows if w[0] is p.page and min(w[1]) - 1 <= max(span) and min(span) <= max(w[1]) + 1), None)
+        if hit:
+            hit[1] |= span
+        else:
+            windows.append([p.page, span])
+    items = []
+    for page, span in windows:
+        text = " ".join(x.text for x in page.passages if x.pos in span)[:2500]
+        when = (f"published {page.pub_date.isoformat()}" if page.pub_date else
+                "undated article" if page.kind == kb.ARTICLE else f"live on {page.taken_on.isoformat()}")
+        items.append((f"{kb.KIND_NAMES[page.kind]}, {page.url}, {when}", text, page.url))
+    out = llm.grounded_answer(q, items)
+    if not out:
+        return None
+    text, urls = out
+    return Answer(text=text, sources=[Source(url=u, snapshot_id=snap.snapshot_id) for u in urls[:3]], confident=True)
