@@ -75,6 +75,8 @@ There are about 36 entries. We keep the list focused rather than listing every n
 `solution/llm.py`. It is switched on by `DUPACO_LLM`, set in the environment or in a repo-root `.env` file (git ignores `.env`):
 
 - `DUPACO_LLM=deepseek` plus `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`, and `DEEPSEEK_BASE_URL`). The `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` names from `pdf-rag-chat-template` also work, but only when `LLM_BASE_URL` points at `api.deepseek.com`, so a key meant for another provider is never sent there.
+- `DUPACO_LLM=gemini` plus `GEMINI_API_KEY` (optional `GEMINI_MODEL`, default `gemini-3.8-flash`). It uses Google's OpenAI-compatible endpoint with thinking off.
+- `DUPACO_LLM=anthropic` plus `ANTHROPIC_API_KEY` (optional `ANTHROPIC_MODEL`, default `claude-opus-5-5`). It uses the official `anthropic` SDK, which is imported only in this mode (`pip install anthropic`); the default run still needs no packages. Effort is set to `low`, because thinking can't be turned off on this model. Server-side refusal fallbacks are on, and a refusal or truncated reply falls back to the rule answer.
 - `DUPACO_LLM=ollama` for a local model with no key (optional `OLLAMA_MODEL`, default `gemma4:12b`, and `OLLAMA_BASE_URL`). It uses Ollama's native `/api/chat` with thinking off.
 - `DUPACO_LLM_TIMEOUT` (default 20 s).
 
@@ -95,6 +97,7 @@ When it is on:
 |---|---|---|---|---|
 | Rules only (default) | 0.915 | 0.05 s | 1.0 | **0.915** |
 | + DeepSeek `deepseek-chat` | 0.915 | 2.42 s | 0.98 | 0.911 |
+| + Claude `claude-opus-5-5` (effort low) | 0.915 | 2.38 s | 0.98 | 0.911 |
 | + Ollama `gemma4:12b` (local Mac) | 0.868 | 20 s (timeouts) | 0.0 | 0.715 |
 
 - **DeepSeek:**
@@ -102,6 +105,8 @@ When it is on:
   - The answers read better: one sentence instead of a quoted paragraph. But the per-question scores are identical to the rules-only run.
   - It didn't fix dup-081 either. The three states were in its context, and it still wrote only "charter area".
   - The first DeepSeek run scored 0.886. The model dropped the join link on dup-082 and replaced the rules' sources on dup-054, which lost the source bonus. Keeping the rules' links and sources fixed both.
+- **Claude Opus 5.5:** it rewrote 14 of the 15 passage answers, taking 1.2–3.1 s each. Like DeepSeek, its per-question scores are identical to the rules-only run, and it also wrote only "charter area" on dup-081.
+- **Gemini `gemini-3.8-flash`:** not measured; the API returned 503 (high demand) throughout the test window.
 - **Ollama:** about 4k tokens of context took 5–20 s per question on this Mac. It also lost two answers: "fifth time" on dup-087 and the join URL on dup-082.
 
 So the submission runs with the layer **off**. It is documented as an option for when answers should read as prose rather than quoted passages.

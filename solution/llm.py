@@ -5,6 +5,10 @@ Turned on by DUPACO_LLM (environment or a repo-root .env file, which git ignores
     DUPACO_LLM=deepseek   + DEEPSEEK_API_KEY=sk-...   (optional DEEPSEEK_MODEL, DEEPSEEK_BASE_URL;
                           pdf-rag-chat-template's LLM_API_KEY / LLM_MODEL / LLM_BASE_URL also work
                           when LLM_BASE_URL is https://api.deepseek.com)
+    DUPACO_LLM=gemini     + GEMINI_API_KEY=...         (optional GEMINI_MODEL, default gemini-3.8-flash;
+                                                       Google's OpenAI-compatible endpoint)
+    DUPACO_LLM=anthropic  + ANTHROPIC_API_KEY=...      (optional ANTHROPIC_MODEL, default claude-opus-5-5;
+                                                       needs `pip install anthropic`, only for this mode)
     DUPACO_LLM=ollama     local model, no key         (optional OLLAMA_MODEL, default gemma4:12b;
                                                        OLLAMA_BASE_URL, default http://localhost:11434)
 Optional: DUPACO_LLM_TIMEOUT in seconds (default 20).
@@ -83,6 +87,8 @@ def provider() -> str:
     p = _get("DUPACO_LLM").lower()
     if p == "deepseek" and _deepseek("API_KEY"):
         return p
+    if p in ("gemini", "anthropic") and _get(p.upper() + "_API_KEY"):
+        return p
     return "ollama" if p == "ollama" else ""
 
 
@@ -107,13 +113,44 @@ def chat(messages: list) -> Optional[str]:
                           "think": False, "options": {"temperature": 0, "seed": 0, "num_predict": 250, "num_ctx": 8192}},
                          {})
             return (data["message"]["content"] or "").strip()
-        data = _post(_deepseek("BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
-                     {"model": _deepseek("MODEL", "deepseek-chat"), "messages": messages,
-                      "temperature": 0, "max_tokens": 250, "stream": False},
-                     {"Authorization": "Bearer " + _deepseek("API_KEY")})
+        if provider() == "anthropic":
+            return _anthropic(messages)
+        if provider() == "gemini":
+            url = _get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+            body = {"model": _get("GEMINI_MODEL", "gemini-3.8-flash"), "reasoning_effort": "none"}
+            key = _get("GEMINI_API_KEY")
+        else:
+            url = _deepseek("BASE_URL", "https://api.deepseek.com")
+            body = {"model": _deepseek("MODEL", "deepseek-chat")}
+            key = _deepseek("API_KEY")
+        body.update(messages=messages, temperature=0, max_tokens=250, stream=False)
+        data = _post(url.rstrip("/") + "/chat/completions", body, {"Authorization": "Bearer " + key})
         return (data["choices"][0]["message"]["content"] or "").strip()
     except Exception:
         return None
+
+
+# Models that accept server-side refusal fallbacks ("default" routing); others (e.g. Haiku) don't.
+FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
+
+
+def _anthropic(messages: list) -> Optional[str]:
+    """Claude via the official SDK (imported only in this mode, so the default needs no packages).
+    Current models reject temperature and can't turn thinking off, so effort=low keeps it fast."""
+    import anthropic
+    model = _get("ANTHROPIC_MODEL", "claude-opus-5-5")
+    client = anthropic.Anthropic(api_key=_get("ANTHROPIC_API_KEY"),
+                                 timeout=float(_get("DUPACO_LLM_TIMEOUT", "20")), max_retries=0)
+    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    kwargs = dict(model=model, max_tokens=2000, system=system, output_config={"effort": "low"},
+                  messages=[m for m in messages if m["role"] != "system"])
+    if model in FALLBACK_MODELS:
+        resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
+    else:
+        resp = client.messages.create(**kwargs)
+    if resp.stop_reason in ("refusal", "max_tokens"):
+        return None
+    return "".join(b.text for b in resp.content if b.type == "text").strip()
 
 
 def _digits(text: str) -> set:
