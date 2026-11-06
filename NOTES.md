@@ -68,7 +68,7 @@ There are about 36 entries. We keep the list focused rather than listing every n
 
 - **Rule J** comes from Patrick's `pdf-rag-chat-template` (the `terms` check in `app/confidence.py`: names in an answer must be in the cited passages). It is adapted here to refuse at retrieval time.
 - **The optional LLM layer's guard rails** come from `pdf-rag-chat-template` (`app/rag.py`): the cite-or-refuse check and `ungrounded_numbers` (every figure must be in a cited passage), plus `expand` (widen a hit with its neighbouring chunks). The prompt follows its `SYSTEM_PROMPT`.
-- Not used, and why: dense or hybrid retrieval with RRF (rank fusion) and cross-encoder reranking, from `healthcare-agentic-rag`. These need a local embedding model download or an API key.
+- **Optional hybrid retrieval** (`solution/embed.py`, off by default) follows `healthcare-agentic-rag`'s BM25 + dense idea. It uses a weighted sum instead of RRF (rank fusion), because the rules downstream compare score ratios. Cross-encoder reranking was not used, because it needs a model download.
 
 ## Optional LLM layer (DeepSeek or Ollama) — off by default
 
@@ -110,6 +110,27 @@ When it is on:
 - **Ollama:** about 4k tokens of context took 5–20 s per question on this Mac. It also lost two answers: "fifth time" on dup-087 and the join URL on dup-082.
 
 So the submission runs with the layer **off**. It is documented as an option for when answers should read as prose rather than quoted passages.
+
+## Optional embeddings (local Ollama) — off by default
+
+`solution/embed.py` is switched on with `DUPACO_EMBED=ollama`. It uses `nomic-embed-text` and needs numpy, which is imported only in this mode. Without Ollama or numpy, search silently stays BM25-only.
+
+- **How it works:** each unique passage is embedded once at ingest. That is about 14k texts and took about 200 s on a Mac; ingest isn't scored, and the limit is 30 minutes. A question costs one embedding call, about 20 ms.
+- **When it is used:** only when the best BM25 passage covers less than 75% of the question's idf-weighted words, i.e. when the member's wording isn't the website's. The cosine score is then added at twice the best BM25 score's scale.
+
+**Measured (11-05).** The probe set is 30 reworded passage questions I wrote, avoiding the site's words ("grocery-store branch" for Hy-Vee, "ABA number" for routing number):
+
+| Mode | Reworded probes hit | Practice set |
+|---|---|---|
+| BM25 only (default) | 9 / 30 | 0.915 |
+| + embeddings, always on (weight 1 / 2) | 12 / 30, 13 / 30 | 0.881, 0.858 |
+| + embeddings, gated at 75% coverage (default when on) | 12 / 30 | 0.907 |
+
+- **What helped:** dense search ranked the right passage in its top 5 for most reworded questions, including drive-up hours, notary fee, college loans and wire transfers.
+- **What hurt:** it also promoted passages that are similar but wrong, such as "Galena Chrysler" for the Galena branch address and a different Forbes article.
+- **Where else it loses:** the downstream steps are lexical. The name check, sentence picking and same-page second passage are all keyword-based, so a passage ranked first can still lose there.
+
+It stays off: the graders' machine is unlikely to run Ollama, and the practice set drops a little.
 
 ## AI tools used
 

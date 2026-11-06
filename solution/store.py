@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+import embed
 import kb
 import rates
 from search import BM25, tokens
@@ -74,6 +75,7 @@ class SnapshotIndex:
         self.hours = []
         self.bm25 = None
         self.page_bm25 = None
+        self.dense_rows = None   # optional embeddings (embed.py)
 
     def finalize(self):
         for p in self.pages:
@@ -84,6 +86,8 @@ class SnapshotIndex:
                 for psg in p.passages:
                     self.prose_rows.extend(rates.rows_from_passage(psg))
         self.bm25 = BM25([tokens(p.heading + " " + p.text) for p in self.passages])
+        if embed.enabled():
+            self.dense_rows = embed.index(self.passages)
         self.page_docs = [p for p in self.pages if p.kind <= kb.PROMO]
         self.page_bm25 = BM25([tokens(" ".join([p.title, p.path.replace("/", " ").replace("-", " ")] +
                                                [x.heading for x in p.passages[:40]])) for p in self.page_docs])

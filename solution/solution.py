@@ -27,6 +27,7 @@ sys.path.insert(0, str(next(d / "harness" for d in HERE.parents if (d / "harness
 from contract import Answer, Conflict, Snapshot, Source  # noqa: E402
 
 import conflicts as conflict_mod  # noqa: E402
+import embed  # noqa: E402
 import kb  # noqa: E402
 import llm  # noqa: E402
 import rates  # noqa: E402
@@ -333,23 +334,36 @@ MEMBER_SERVICE = ("For help with your own account you can log in to Shine Online
                   "Dupaco at 800-373-7600.")
 
 
-def _rank_passages(qt: list, snap, top: int = 80) -> list:
+def _rank_passages(qt: list, snap, top: int = 80, q: str = "") -> list:
     """BM25, times page-kind weight (rule A), times the share of question words the passage
     covers (so one word repeated many times doesn't win), with a small bonus for a page's
-    opening paragraphs (they summarise the page)."""
-    hits = snap.bm25.search(qt, top=top)
-    q = set(qt)
+    opening paragraphs (they summarise the page). With optional embeddings (embed.py) the
+    passages most similar to the question add a cosine score on top, scaled to the best BM25 score."""
+    q_set = set(qt)
     idf = snap.bm25.idf
-    q_w = sum(idf.get(t, 0) for t in q) or 1.0
-    out = []
-    for i, s in hits:
-        p = snap.passages[i]
-        pt = set(tokens(p.heading + " " + p.text))
-        cover = sum(idf.get(t, 0) for t in q & pt) / q_w
+    q_w = sum(idf.get(t, 0) for t in q_set) or 1.0
+
+    def shape(p):
         lede = 1.3 if p.pos <= 2 else 1.0
         stub = 0.5 if len(p.text) < 50 and not re.search(r"\d", p.text) else 1.0   # button / nav labels
-        out.append((s * KIND_WEIGHT[p.page.kind] * (0.4 + 0.6 * cover) * lede * stub, p))
-    return out
+        return KIND_WEIGHT[p.page.kind] * lede * stub
+
+    scores, best_cover = {}, 0.0
+    for i, s in snap.bm25.search(qt, top=top):
+        p = snap.passages[i]
+        pt = set(tokens(p.heading + " " + p.text))
+        cover = sum(idf.get(t, 0) for t in q_set & pt) / q_w
+        best_cover = max(best_cover, cover)
+        scores[i] = s * (0.4 + 0.6 * cover) * shape(p)
+    # embeddings only when no passage uses most of the question's own words (a reworded question)
+    if q and snap.dense_rows is not None and best_cover < embed.min_cover():
+        dense = embed.search(q, snap.dense_rows)
+        if len(dense) > 1:
+            best = max(scores.values(), default=1.0)
+            hi, lo = dense[0][1], dense[-1][1]
+            for i, c in dense:
+                scores[i] = scores.get(i, 0.0) + embed.weight() * best * (c - lo) / (hi - lo + 1e-9) * shape(snap.passages[i])
+    return [(s, snap.passages[i]) for i, s in scores.items()]
 
 
 def _count_candidates(noun: str, qt: list, snap, cands: list) -> list:
@@ -390,7 +404,7 @@ def text_answer(q: str, snap) -> Answer:
     qt = tokens(rewrite_question(q))
     if not qt:
         return Answer(text=NOT_LISTED, confident=False)
-    cands = _rank_passages(qt, snap)
+    cands = _rank_passages(qt, snap, q=q)
     if not cands:
         return Answer(text=NOT_LISTED, confident=False)
     # Rule J (from Patrick's pdf-chat-poc "terms" check): a name in the question (a branch, a
