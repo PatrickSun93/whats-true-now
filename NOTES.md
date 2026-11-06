@@ -74,7 +74,7 @@ There are about 36 entries. We keep the list focused rather than listing every n
 
 `solution/llm.py`. It is switched on by `DUPACO_LLM`, set in the environment or in a repo-root `.env` file (git ignores `.env`):
 
-- `DUPACO_LLM=deepseek` plus `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`, and `DEEPSEEK_BASE_URL`).
+- `DUPACO_LLM=deepseek` plus `DEEPSEEK_API_KEY` (optional `DEEPSEEK_MODEL`, default `deepseek-chat`, and `DEEPSEEK_BASE_URL`). The `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` names from `pdf-rag-chat-template` also work, but only when `LLM_BASE_URL` points at `api.deepseek.com`, so a key meant for another provider is never sent there.
 - `DUPACO_LLM=ollama` for a local model with no key (optional `OLLAMA_MODEL`, default `gemma4:12b`, and `OLLAMA_BASE_URL`). It uses Ollama's native `/api/chat` with thinking off.
 - `DUPACO_LLM_TIMEOUT` (default 20 s).
 
@@ -86,16 +86,25 @@ When it is on:
 - The model sees the passages the rules already ranked, the rules' pick first. Each hit is widened with up to 3 neighbouring passages from the same page. Each passage is labelled with its page kind and the date it was true, and the model is told to apply rules A and G.
 - It runs at temperature 0, with one call per question. Answers are cached per question, so a repeated question gets the same answer.
 - The model's reply is **kept only if it cites a passage and every figure in it appears in the cited passages or the question.** Otherwise the rule answer is returned unchanged. The rule answer is also returned on `NOT_FOUND`, on a timeout (20 s) and on any error.
+- When the question asks for a link, the links the rules found are appended, because the model tends to drop them. The rules' sources are kept alongside the model's citations.
 - Only the standard library is used (`urllib`), so `requirements.txt` stays empty.
 
-**Measured on the practice set (11-05, Ollama `gemma4:12b` on a Mac):**
+**Measured on the practice set (11-05):**
 
 | Mode | Accuracy | p95 answer time | Speed score | Final |
 |---|---|---|---|---|
 | Rules only (default) | 0.915 | 0.05 s | 1.0 | **0.915** |
-| + Ollama gemma4:12b | 0.868 | 20 s (timeouts) | 0.0 | 0.715 |
+| + DeepSeek `deepseek-chat` | 0.915 | 2.42 s | 0.98 | 0.911 |
+| + Ollama `gemma4:12b` (local Mac) | 0.868 | 20 s (timeouts) | 0.0 | 0.715 |
 
-Passage questions took 5–20 s each with about 4k tokens of context. The model also lost two answers. On dup-087 it dropped "fifth time", and on dup-082 it dropped the join URL. It read better on others (Galena address, routing number, Home$tart), but those already scored 1.0. So the submission runs with the layer **off**. DeepSeek has not been measured yet because there was no key.
+- **DeepSeek:**
+  - It answered 15 of the 40 questions, taking 1.3–2.5 s each.
+  - The answers read better: one sentence instead of a quoted paragraph. But the per-question scores are identical to the rules-only run.
+  - It didn't fix dup-081 either. The three states were in its context, and it still wrote only "charter area".
+  - The first DeepSeek run scored 0.886. The model dropped the join link on dup-082 and replaced the rules' sources on dup-054, which lost the source bonus. Keeping the rules' links and sources fixed both.
+- **Ollama:** about 4k tokens of context took 5–20 s per question on this Mac. It also lost two answers: "fifth time" on dup-087 and the join URL on dup-082.
+
+So the submission runs with the layer **off**. It is documented as an option for when answers should read as prose rather than quoted passages.
 
 ## AI tools used
 

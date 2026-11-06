@@ -441,8 +441,15 @@ def text_answer(q: str, snap) -> Answer:
     if llm.enabled():
         better = _llm_rewrite(q, best, cands, snap)
         if better:
-            return better
+            # keep what the rules found: their links (the model tends to drop them) and their sources
+            links = [u for u in dict.fromkeys(LINK.findall(snippet)) if u not in better.text][:3] if want_urls else []
+            text = better.text + (" Links: " + ", ".join(links) if links else "")
+            merged = list({x.url: x for x in better.sources + srcs}.values())[:4]
+            return Answer(text=text, sources=merged, confident=True)
     return Answer(text=snippet, sources=srcs, confident=True)
+
+
+LINK = re.compile(r"https?://[^\s)\]]+")
 
 
 def _llm_rewrite(q: str, best, cands: list, snap) -> Optional[Answer]:
@@ -467,7 +474,7 @@ def _llm_rewrite(q: str, best, cands: list, snap) -> Optional[Answer]:
             windows.append([p.page, span])
     items = []
     for page, span in windows:
-        text = " ".join(x.text for x in page.passages if x.pos in span)[:2500]
+        text = " ".join(x.text for x in page.passages if x.pos in span)[:2000]
         when = (f"published {page.pub_date.isoformat()}" if page.pub_date else
                 "undated article" if page.kind == kb.ARTICLE else f"live on {page.taken_on.isoformat()}")
         items.append((f"{kb.KIND_NAMES[page.kind]}, {page.url}, {when}", text, page.url))
