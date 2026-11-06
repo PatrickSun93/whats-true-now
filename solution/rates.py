@@ -169,6 +169,7 @@ class RateRow:
     model_years: Optional[tuple]
     range_rank: Optional[int] = None
     key: tuple = field(default=())
+    periods: list = field(default_factory=list)   # per value: "" | "intro" | "after" (promo tables)
 
     @property
     def page(self):
@@ -178,12 +179,20 @@ class RateRow:
     def effective(self) -> Optional[date]:
         return self.table.effective
 
-    def value_str(self, metrics: Optional[set] = None) -> str:
-        vals = [(m, v) for m, v in self.values if metrics is None or m in metrics] or self.values
-        return ", ".join(f"{v} {METRIC_LABEL.get(m, m)}".strip() for m, v in vals)
+    def value_str(self, metrics: Optional[set] = None, period: Optional[str] = None) -> str:
+        items = list(zip(self.values, self.periods or [""] * len(self.values)))
+        vals = [(m, v, p) for (m, v), p in items if metrics is None or m in metrics] or [(m, v, p) for (m, v), p in items]
+        if period and any(p == period for _, _, p in vals):
+            vals = [x for x in vals if x[2] == period]           # the member asked for one period only
+        label_period = len({p for _, _, p in vals}) > 1
+        return ", ".join(f"{v} {METRIC_LABEL.get(m, m)}".strip() + (PERIOD_LABEL[p] if label_period else "")
+                         for m, v, p in vals)
 
 
 METRIC_LABEL = {"apy": "APY", "apr": "APR", "dividend": "dividend rate", "rate": "rate", "": ""}
+PERIOD_LABEL = {"": "", "intro": " (introductory)", "after": " (after the promotional period)"}
+PERIOD_INTRO = re.compile(r"\b(1st|first|intro\w*|promo\w*)\b", re.I)
+PERIOD_AFTER = re.compile(r"\bafter\b", re.I)
 SKIP_COL = re.compile(r"\bmin\b|min\.|minimum|payment|points|to open|to earn", re.I)
 
 
@@ -223,13 +232,15 @@ def rows_from_table(t: Table) -> list:
             caption = f"{above} · {caption}".strip(" ·")
     is_business_page = t.page.path.startswith("/business")
     for cells in t.rows:
-        label_parts, values = [], []
+        label_parts, values, periods = [], [], []
         for i, cell in enumerate(cells):
             head = t.header[i] if i < len(t.header) else ""
             if not cell or cell in ("—", "-", "N/A", "None"):
                 continue
             if "%" in cell and PCT.search(cell) and not SKIP_COL.search(head):
                 values.append((_metric(head, cell), _clean_value(cell)))
+                # promo tables: "APY for 1st 6 Months" / "APY After Promotional Period"
+                periods.append("after" if PERIOD_AFTER.search(head) else "intro" if PERIOD_INTRO.search(head) else "")
             elif SKIP_COL.search(head) or re.fullmatch(r"\$?\s?[\d,]+(\.\d+)?", cell):
                 continue
             else:
@@ -245,7 +256,8 @@ def rows_from_table(t: Table) -> list:
         display = label if (not caption or label_parts[0].lower() in caption.lower()
                             or caption.lower() in label.lower()) else f"{caption} — {label}"
         out.append(RateRow(table=t, label=label, display=display, values=values, concepts=cs,
-                           terms=terms(label), amount=amount_range(label), model_years=model_year_range(label)))
+                           terms=terms(label), amount=amount_range(label), model_years=model_year_range(label),
+                           periods=periods if any(periods) else []))
     # rank of each row's range among the table's distinct ranges (aligns tiers across pages)
     for attr in ("model_years", "amount"):
         rngs = sorted({getattr(r, attr) for r in out if getattr(r, attr)}, key=lambda x: (-x[1], -x[0]))
@@ -330,14 +342,20 @@ DEPOSIT_PRODUCTS = {"certificate", "savings", "share_savings", "bright", "you_na
 PAY_INTENT = re.compile(r"\b(pay|pays|paying|earn|earns|earning)\b", re.I)
 
 
+LIST_WORDS = re.compile(r"\b(terms?|tiers?|lengths?|durations?|maturities|specials?)\b", re.I)
+LIST_INTENT = re.compile(r"\b(available|offer|offers|offered|have|has|come in|are there|exist|currently|choose from)\b", re.I)
+
+
 def is_rate_question(q: str) -> bool:
-    """Asks for a rate (or what a deposit account pays) AND names a product or variant."""
+    """Asks for a rate (or what a deposit account pays) AND names a product or variant.
+    Rule O: asking which terms / tiers / specials a product comes in is answered from its rate table too."""
     rq = parse_query(q)
     named = rq.products | (rq.variants - {"business"})
     if not named:
         return False
     plain = re.sub(r"high[- ]?yield", "", q, flags=re.I)
-    return bool(RATE_INTENT.search(plain)) or bool(PAY_INTENT.search(q) and (named & DEPOSIT_PRODUCTS))
+    return (bool(RATE_INTENT.search(plain)) or bool(PAY_INTENT.search(q) and (named & DEPOSIT_PRODUCTS))
+            or bool(LIST_WORDS.search(q) and LIST_INTENT.search(q)))
 
 
 # ---------------------------------------------------------------------------------------
@@ -348,7 +366,12 @@ def eligible(row: RateRow, rq: RateQuery) -> Optional[float]:
     need = set(rq.products)
     if "certificate" in need and row.terms and any(m in ("apy", "dividend") for m, _ in row.values):
         need.discard("certificate")        # a deposit row with a term in months is a certificate ("60 Months" IRA)
-    if not need <= row.concepts or not rq.variants <= row.concepts:
+    have = set(row.concepts)
+    if "intro" in row.periods:
+        have.add("intro")                  # a promo table's "1st 6 months" column answers an "introductory" question
+    if "after" in row.periods:
+        have.add("after_promo")
+    if not need <= have or not rq.variants <= have:
         return None
     score = 0.0
     if rq.term is not None:

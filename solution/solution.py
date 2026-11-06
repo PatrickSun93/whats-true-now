@@ -233,16 +233,18 @@ def rate_answer(q: str, snap, older=()) -> Answer:
                                f"page{when}, so it may have ended. Please contact Dupaco to confirm current options.",
                           sources=[Source(url=newer[0].page.url, snapshot_id=snap.snapshot_id)], confident=False,
                           conflict_note=f"Only {kb.KIND_NAMES[t.page.kind]} {t.page.url} lists it.")
-    parts = [f"{r.display}: {r.value_str(rq.metrics)}" for r in res.rows]
+    period = "intro" if "intro" in rq.variants else "after" if "after_promo" in rq.variants else None
+    parts = [f"{r.display}: {r.value_str(rq.metrics, period)}" for r in res.rows]
     eff = f" (rates effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""
     text = "; ".join(parts) + eff + "."
     if CHANGE_Q.search(q) and older:
-        # the member asked how it changed: add what the same page showed before (history is kept per snapshot)
+        # the member asked how it changed: every earlier value the same page showed, oldest first
         prev = _previous_values(res.rows[0], older)
         if prev:
-            text += " Previously: " + "; then ".join(
-                f"{p.value_str(rq.metrics)}" + (f" (effective {p.effective.strftime('%m/%d/%Y')})" if p.effective else
-                                                 f" (seen {p.page.taken_on.isoformat()})") for p in prev[:2]) + "."
+            text += " Earlier on the same page: " + "; ".join(
+                f"{p.value_str(rq.metrics, period)}" + (f" (effective {p.effective.strftime('%m/%d/%Y')})" if p.effective
+                                                         else f" (seen {p.page.taken_on.isoformat()})")
+                for p in reversed(prev[:5])) + "."
     pages = []
     for u in [r.page.url for r in res.rows] + res.agreeing_pages:
         if u not in pages:

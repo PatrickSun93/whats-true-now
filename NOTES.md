@@ -18,7 +18,7 @@ We keep **every snapshot**, not just the latest. Each page version is tagged wit
 
 ## How a question is routed
 
-1. **Rate question.** It asks for a rate, APY, APR, dividend or interest, or what a deposit account pays, *and* it names a product. These are answered from rate rows (`solution/rates.py`).
+1. **Rate question.** It asks for a rate, APY, APR, dividend or interest, or what a deposit account pays, *and* it names a product. Asking which terms, tiers or specials a product comes in counts too (rule O). These are answered from rate rows (`solution/rates.py`).
 2. **Hours question.** These are answered from the "Lobby / Drive-up" hour blocks found on the site.
 3. **Link question** ("what's the link / URL"). These are answered with the best official page.
 4. **Fee, phone, address or routing-number question.** These are answered from fact records when one record's label covers the question (rule L). Otherwise they fall through to 5.
@@ -42,6 +42,7 @@ We keep **every snapshot**, not just the latest. Each page version is tagged wit
 | **L** | **Structured before searched:** fees, phone numbers, addresses and the routing number are read from the page's own structure (table rows, "Label: value" lines, address cards) into records, and a question of that type is answered from the record whose label covers it; copies are ranked by rule D. If no record fits, the question goes to passage search. Example: "Incoming wire transfer \| $10.00" answers "What is the fee for receiving a wire?" and not the $25 domestic row. |
 | **M** | **A term makes a certificate:** a deposit row with a term in months and an APY is a certificate even if its label doesn't say so ("Regular IRAs — 60 Months" answers "60-month IRA certificate"). |
 | **N** | **A fee nobody states isn't listed:** when a fee question matches no record and the best passage names no amount at all, we say so (`confident=False`) instead of quoting unrelated text. (Refusing whenever the best passage is the fee schedule was tried and dropped: it refused real fees whose wording the records missed.) |
+| **O** | **"Which terms / tiers / specials do you have" is a rate question:** it is answered with every row of the product's winning table (rule D), one per line with its rate, so the list is as complete as the rate sheet ("Regular Certificates — 60 Month: 1.80% APY; 48 Month: …"). |
 
 Smaller choices, all visible in the code:
 
@@ -50,7 +51,8 @@ Smaller choices, all visible in the code:
 - "Handpicked for You" teaser blocks are dropped, because they quote other, often old, articles.
 - Passage ranking multiplies BM25 by the page-kind weight and by the share of question words the passage covers. The first paragraphs of a page get a small boost, and very short button or nav labels are down-weighted.
 - The quoted snippet is the smallest set of sentences that covers the question words. A word found in many sentences of the passage counts as the topic, not the answer.
-- A question that asks how a rate *changed* ("what happened to … between May and September") gets the current value plus what the same page showed before, with both effective dates. Every other question gets the current value only.
+- A question that asks how a rate *changed* ("what happened to … since May") gets the current value plus every earlier distinct value the same page showed, oldest first, each with its effective date. Every other question gets the current value only.
+- Promo tables with two rate columns ("APY for 1st 6 Months" / "APY After Promotional Period", the Achieve Money Market landing page) keep the period of each value: an "introductory" question gets the first column, an "after the promotion" question the second, and a plain question both, labelled.
 - Fact records: a row with no value is a section label for the rows under it ("Safe-Deposit Box"); the same schedule rendered as plain lines ("Official check $5.00* each", how the PDF comes through in the older snapshots) is read the same way; a fee schedule's date is read from its file name when the page has none; "largest / cheapest" picks among equally matching rows by amount; negations ("an ATM that isn't Dupaco's") add the word "non" so "Non-Dupaco ATM usage" matches. The organisation's own phone, address and routing number ("Phone: 800-…" on the contact page) answer when the question names nothing more specific.
 
 ## Conflicts (`conflicts()`)
@@ -77,6 +79,8 @@ The practice set has no fee questions and only two contact questions, so we wrot
 | 30 deliberately reworded passage questions | 9 / 30 | 10 / 30 |
 
 What still misses: paraphrases whose wording drops the qualifier ("the cost to get a wire"), and words outside the site's vocabulary ("dormant", "notarized", "within the U.S."), which now get an "isn't listed" instead of a wrong fee.
+
+A second round of 54 questions targeted what the hidden set announces: values that changed between snapshots (home-loan rates move in every snapshot, auto rates and the special certificates in the last ones), stale copies on promo and calculator pages, balance tiers, products that left the rate sheet (25-month special, HELOC intro rate), list completeness and the promo-only Achieve Money Market. Scored before any change: as-of 20/20, stale 8/8, tiers 13/13, gone 4/4, but lists 0/4, promo 2/3 and change history 1.5/2. Rule O, the promo-column periods and the fuller change history fixed those (54/54) with the practice set unchanged question by question.
 
 ## Known misses on the practice set
 
