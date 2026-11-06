@@ -345,7 +345,10 @@ def is_rate_question(q: str) -> bool:
 # ---------------------------------------------------------------------------------------
 def eligible(row: RateRow, rq: RateQuery) -> Optional[float]:
     """None = row cannot answer the question; otherwise a score (higher = better fit)."""
-    if not rq.products <= row.concepts or not rq.variants <= row.concepts:
+    need = set(rq.products)
+    if "certificate" in need and row.terms and any(m in ("apy", "dividend") for m, _ in row.values):
+        need.discard("certificate")        # a deposit row with a term in months is a certificate ("60 Months" IRA)
+    if not need <= row.concepts or not rq.variants <= row.concepts:
         return None
     score = 0.0
     if rq.term is not None:

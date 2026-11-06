@@ -8,20 +8,21 @@ python harness/run_eval.py --submission solution --eval eval/public_eval.jsonl
 
 - **API keys:** none needed. The default is plain Python rules with no network or model calls. An optional LLM layer (DeepSeek, or a local Ollama model) can be switched on (see below).
 - **Packages:** none. Standard library only (`requirements.txt` is empty on purpose). Runs on Python 3.9+.
-- **Speed:** loading all five snapshots takes about 4 s. Each answer takes well under 0.1 s.
+- **Speed:** loading all five snapshots takes about 6 s. Each answer takes well under 0.1 s.
 - **Consistency:** answers are deterministic and cached per (question, as_of).
 - **Practice set:** 0.915 (starter: 0.093). The kit's selftest (`harness/selftest`, with its conflicts gold) scores 1.0.
 
 ## The idea in one paragraph
 
-We keep **every snapshot**, not just the latest. Each page version is tagged with what kind of page it is and when its statements were true. Two kinds of facts come out of each page. Rate tables become **rate rows**: product, term, tier, value, and the table's own "Rates are effective as of …" date. Everything else becomes **passages** for keyword search. A question is answered from the snapshot that was live on its date. Explicit, one-line rules decide which of several conflicting statements wins. If no page actually states the answer, we say so.
+We keep **every snapshot**, not just the latest. Each page version is tagged with what kind of page it is and when its statements were true. Three kinds of things come out of each page. Rate tables become **rate rows**: product, term, tier, value, and the table's own "Rates are effective as of …" date. Fee tables, "Label: value" lines and address cards become **fact records**: subject, attribute, qualifier, value (`solution/facts.py`). Everything else becomes **passages** for keyword search. A question is answered from the snapshot that was live on its date. Explicit, one-line rules decide which of several conflicting statements wins. If no page actually states the answer, we say so.
 
 ## How a question is routed
 
 1. **Rate question.** It asks for a rate, APY, APR, dividend or interest, or what a deposit account pays, *and* it names a product. These are answered from rate rows (`solution/rates.py`).
 2. **Hours question.** These are answered from the "Lobby / Drive-up" hour blocks found on the site.
 3. **Link question** ("what's the link / URL"). These are answered with the best official page.
-4. **Anything else.** These go to passage search: BM25 (a standard keyword-ranking formula) plus the rules below.
+4. **Fee, phone, address or routing-number question.** These are answered from fact records when one record's label covers the question (rule L). Otherwise they fall through to 5.
+5. **Anything else.** These go to passage search: BM25 (a standard keyword-ranking formula) plus the rules below.
 
 ## Rules for deciding what is current (each one is one sentence)
 
@@ -38,6 +39,8 @@ We keep **every snapshot**, not just the latest. Each page version is tagged wit
 | **I** | **Partial snapshots:** a snapshot missing more than 30% of the previous snapshot's pages is treated as an update, and the pages it doesn't mention are carried over. All five Dupaco snapshots are full crawls (each loses at most 8 pages), so this never fires on them. It matters for incremental feeds such as the kit's selftest. |
 | **J** | **Names must be in the evidence:** a branch, program or product name in the question must appear in the passage or rate row we quote. Otherwise we say it isn't listed, instead of answering about something else ("Mullan Avenue lobby hours", "Super Saver account", "Visa Signature"). |
 | **K** | **Expired offers:** a rate that appears only on a promo, calculator or article page is treated as ended when the official rate sheet for that product family is newer and no longer lists it. |
+| **L** | **Structured before searched:** fees, phone numbers, addresses and the routing number are read from the page's own structure (table rows, "Label: value" lines, address cards) into records, and a question of that type is answered from the record whose label covers it; copies are ranked by rule D. If no record fits, the question goes to passage search. Example: "Incoming wire transfer \| $10.00" answers "What is the fee for receiving a wire?" and not the $25 domestic row. |
+| **M** | **A term makes a certificate:** a deposit row with a term in months and an APY is a certificate even if its label doesn't say so ("Regular IRAs — 60 Months" answers "60-month IRA certificate"). |
 
 Smaller choices, all visible in the code:
 
@@ -46,6 +49,8 @@ Smaller choices, all visible in the code:
 - "Handpicked for You" teaser blocks are dropped, because they quote other, often old, articles.
 - Passage ranking multiplies BM25 by the page-kind weight and by the share of question words the passage covers. The first paragraphs of a page get a small boost, and very short button or nav labels are down-weighted.
 - The quoted snippet is the smallest set of sentences that covers the question words. A word found in many sentences of the passage counts as the topic, not the answer.
+- A question that asks how a rate *changed* ("what happened to … between May and September") gets the current value plus what the same page showed before, with both effective dates. Every other question gets the current value only.
+- Fact records: a row with no value is a section label for the rows under it ("Safe-Deposit Box"); a fee schedule's date is read from its file name when the page has none; "largest / cheapest" picks among equally matching rows by amount; negations ("an ATM that isn't Dupaco's") add the word "non" so "Non-Dupaco ATM usage" matches. The organisation's own phone, address and routing number ("Phone: 800-…" on the contact page) answer when the question names nothing more specific.
 
 ## Conflicts (`conflicts()`)
 
@@ -54,9 +59,23 @@ Smaller choices, all visible in the code:
    - on its authoritative page in different snapshots (the rate changed).
 
    Rows are matched by product, term and tier. Balance tiers are matched by their dollar range. Model-year tiers are matched by rank, because their year labels shift: "2023–26" on the stale calculator lines up with "2024-27" on the rate sheet. The resolution is the value rule D picks today. The reason names the winning page and its effective date.
-2. **Drifting article facts.** These are boilerplate sentences whose number changes over time ("… 23 branch office locations", "the fourth / fifth time Forbes recognized Dupaco"). The resolution is the newest article.
+2. **Fact records** (fees, the routing number, phone numbers) whose copies disagree, under the same rule D. Addresses are left out: branch cards share one label, so different addresses are different branches, not a contradiction.
+3. **Drifting article facts.** These are boilerplate sentences whose number changes over time ("… 23 branch office locations", "the fourth / fifth time Forbes recognized Dupaco"). The resolution is the newest article.
 
 There are about 36 entries. We keep the list focused rather than listing every number, because the conflict score is an F1.
+
+## Held-out questions (how we checked the fact records weren't tuned to the practice set)
+
+The practice set has no fee questions and only two contact questions, so we wrote our own before changing the code: 36 seed questions on fees, branches, contact details, per-branch hours, "as of" dates and refusals, each expected string checked in the snapshots, plus 72 paraphrases of them generated with DeepSeek and Claude (test data only, not in the repo). The code was changed looking only at the seed misses; the paraphrases were scored before and after.
+
+| Set | Rules before fact records | With fact records (rule L, M) |
+|---|---|---|
+| Practice set (40) | 0.915 | 0.915 |
+| Seed questions (36) | 0.597 | 0.972 |
+| Paraphrases (72) | 0.500 | 0.917 |
+| 30 deliberately reworded passage questions | 9 / 30 | 9 / 30 |
+
+What still misses: paraphrases whose wording drops the qualifier ("the cost to get a wire"), words outside the site's vocabulary ("dormant", "notarized", "within the U.S."), and refusals for fees the schedule doesn't list (the passage search finds a nearby fee row instead of saying so).
 
 ## Known misses on the practice set
 
@@ -143,6 +162,7 @@ The code, the rule design and these notes were written with **Claude Code** (Ant
 | `solution/solution.py` | `build()`, ingest / answer / conflicts, question routing, hours / link / passage answers |
 | `solution/kb.py` | page kinds, publish dates, cleaning, table + caption + effective-date parsing, passages |
 | `solution/rates.py` | product concepts, qualifiers, rate rows, matching and the winner rule |
+| `solution/facts.py` | fact records from tables, "Label: value" lines and address cards; fee / phone / address / routing answers |
 | `solution/store.py` | per-snapshot index (passages + BM25, rate rows, hour blocks) |
 | `solution/search.py` | tokenizer, synonyms, BM25 |
 | `solution/conflicts.py` | the contradictions list |

@@ -116,5 +116,45 @@ def fact_drift_conflicts(snaps) -> list:
     return out
 
 
+def fact_conflicts(snaps) -> list:
+    """Fees / contact details (facts.py) whose copies disagree: on different pages of the latest
+    snapshot, or on the winning page across snapshots. Resolution = rule D (newest, most official)."""
+    import facts as fm
+    if not snaps:
+        return []
+    latest = snaps[-1]
+    groups = defaultdict(list)
+    for f in latest.facts:
+        if f.attr in ("fee", "phone", "routing"):
+            groups[f.key].append(f)
+    out = []
+    for k, fs in groups.items():
+        fs.sort(key=fm._rank)
+        win = fs[0]
+        seen = {}
+        for f in fs:
+            # several places can share a vague label ("Learning Lab" phone): different copies on different
+            # pages only count for fee rows and the organisation's own details
+            if f.attr == "fee" or f.generic or f.page.path == win.page.path:
+                seen.setdefault(fm.norm_value(f.value), (f, f"{kb.KIND_NAMES[f.page.kind]} {f.page.path} ({latest.snapshot_id})"))
+        for s in snaps[:-1]:
+            for f in s.facts:
+                if f.key == k and f.page.path == win.page.path:
+                    seen.setdefault(fm.norm_value(f.value), (f, f"{f.page.path} in snapshot {s.snapshot_id}"))
+        if len(seen) < 2:
+            continue
+        cur_n = fm.norm_value(win.value)
+        values, sources = [], []
+        for v, (f, where) in sorted(seen.items(), key=lambda kv: kv[0] != cur_n):
+            values.append(f.value)
+            sources.append(Source(url=f.page.url, snapshot_id=f.page.snapshot_id, quote=f.display()[:200]))
+        stale = [w for v, (f, w) in seen.items() if v != cur_n]
+        reason = (f"{win.value} is on the {kb.KIND_NAMES[win.page.kind]} {win.page.path}"
+                  + (f" dated {win.effective.strftime('%m/%d/%Y')}" if win.effective else "")
+                  + f" in the latest snapshot; other values come from {', '.join(stale[:3])} (older or less authoritative).")
+        out.append(Conflict(topic=f"{win.subject} {win.attr}", values=values, sources=sources, resolution=win.value, reason=reason))
+    return out
+
+
 def find_conflicts(snaps) -> list:
-    return rate_conflicts(snaps) + fact_drift_conflicts(snaps)
+    return rate_conflicts(snaps) + fact_conflicts(snaps) + fact_drift_conflicts(snaps)

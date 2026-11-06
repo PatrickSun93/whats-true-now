@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import embed
+import facts
 import kb
 import rates
 from search import BM25, tokens
@@ -57,8 +58,10 @@ def parse_hours(page: kb.PageRec, body: str) -> list:
                 sched.append((dm.group(1).strip(), _norm_sched(dm.group(2))))
                 j += 1
             if sched and any(re.search(r"\d", t) for _, t in sched):
+                # the branch is named just above the block, in the title, or in the article's dateline
                 ctx = " ".join(lines[max(0, i - 6):i])[-600:]
-                blocks.append(HoursBlock(kind, tuple(sched), page.title + " — " + ctx, page))
+                lede = " ".join(lines[:8])[:500]
+                blocks.append(HoursBlock(kind, tuple(sched), page.title + " — " + lede + " — " + ctx, page))
             i = max(j, i + 1)
             continue
         i += 1
@@ -73,6 +76,7 @@ class SnapshotIndex:
         self.rate_rows = []
         self.prose_rows = []     # rates written in sentences, used only when no table row fits
         self.hours = []
+        self.facts = []          # fees, contact details, addresses (facts.py)
         self.bm25 = None
         self.page_bm25 = None
         self.dense_rows = None   # optional embeddings (embed.py)
@@ -85,6 +89,11 @@ class SnapshotIndex:
             if p.kind != kb.ARTICLE:
                 for psg in p.passages:
                     self.prose_rows.extend(rates.rows_from_passage(psg))
+            for t in p.tables:
+                self.facts.extend(facts.facts_from_table(t))
+            for psg in p.passages:
+                self.facts.extend(facts.facts_from_passage(psg))
+        facts.finish(self.facts)
         self.bm25 = BM25([tokens(p.heading + " " + p.text) for p in self.passages])
         if embed.enabled():
             self.dense_rows = embed.index(self.passages)
@@ -106,6 +115,8 @@ def build_index(snapshot) -> SnapshotIndex:
         seen.add(key)
         rec = kb.build_page(pg.url, pg.title, pg.markdown, pg.fetched_at, snapshot.snapshot_id, taken)
         idx.pages.append(rec)
-        idx.hours.extend(parse_hours(rec, kb.main_body(pg.markdown)))
+        body = kb.main_body(pg.markdown)
+        idx.hours.extend(parse_hours(rec, body))
+        idx.facts.extend(facts.facts_from_lines(rec, body.split("\n")))
     idx.finalize()
     return idx

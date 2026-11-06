@@ -28,6 +28,7 @@ from contract import Answer, Conflict, Snapshot, Source  # noqa: E402
 
 import conflicts as conflict_mod  # noqa: E402
 import embed  # noqa: E402
+import facts  # noqa: E402
 import kb  # noqa: E402
 import llm  # noqa: E402
 import rates  # noqa: E402
@@ -94,7 +95,8 @@ class DupacoKnowledge:
             if snap is None:
                 self._cache[key] = Answer(text=NOT_LISTED, confident=False)
             else:
-                self._cache[key] = route(question, snap)
+                older = [s for s in self.snaps if s.taken_on < snap.taken_on]
+                self._cache[key] = route(question, snap, older)
         return self._cache[key]
 
     # ------------------------------------------------------------------ conflicts
@@ -127,24 +129,72 @@ def question_date(q: str) -> Optional[date]:
     return nxt - timedelta(days=1)
 
 
-HOURS_Q = re.compile(r"\bhours?\b|what time|\bopen (?:on|until|till)\b", re.I)
+HOURS_Q = re.compile(r"\bhours?\b|what time|\bopen (?:on|until|till|during|from|in the)\b|\bwhen(?:'s| is| are| does| do)?\b.*\bopen\b", re.I)
 URL_Q = re.compile(r"\b(link|url|web ?page|web address|website address)\b", re.I)
 
 
-def route(q: str, snap) -> Answer:
+def route(q: str, snap, older=()) -> Answer:
     if rates.is_rate_question(q) and not URL_Q.search(q):
-        return rate_answer(q, snap)
+        return rate_answer(q, snap, older)
     if HOURS_Q.search(q) and not re.search(r"\bhour(s)? (of|in)\b", q, re.I):
         return hours_answer(q, snap)
     if URL_Q.search(q):
         return url_answer(q, snap)
-    return text_answer(q, snap)
+    return fact_answer(q, snap) or text_answer(q, snap)
+
+
+# =============================================================================================
+# Fees, contact details, addresses (rule L, facts.py)
+# =============================================================================================
+def fact_answer(q: str, snap) -> Optional[Answer]:
+    res = facts.select(snap.facts, q, snap.bm25.idf)
+    if res is None:
+        return None
+    # Rule J: a name the member used must be on the record we quote
+    names = [n.lower() for n in entity_words(q) if len(n) > 2 and not n.isupper()]
+    shown = " ".join(f.subject + " " + f.qualifier + " " + f.context + " " + f.value for f in res.facts).lower()
+    if any(n not in shown for n in names):
+        return None
+    text = "; ".join(f.display() for f in res.facts) + "."
+    w = res.winner
+    if w.effective:
+        text += f" (fee schedule dated {w.effective.strftime('%m/%d/%Y')})"
+    pages = []
+    for u in [f.page.url for f in res.facts] + facts.agreeing_pages(snap.facts, w):
+        if u not in pages:
+            pages.append(u)
+    srcs = [Source(url=u, snapshot_id=snap.snapshot_id, quote=w.display()[:200] if i == 0 else None)
+            for i, u in enumerate(pages[:5])]
+    note = None
+    if res.others:
+        o = res.others[0]
+        note = (f"{kb.KIND_NAMES[o.page.kind]} {o.page.url} shows {o.value} instead; used "
+                f"{kb.KIND_NAMES[w.page.kind]} {w.page.url} because it is newer / more authoritative.")
+    return Answer(text=text, sources=srcs, confident=True, conflict_note=note)
 
 
 # =============================================================================================
 # Rates
 # =============================================================================================
-def rate_answer(q: str, snap) -> Answer:
+CHANGE_Q = re.compile(r"\b(change|changed|changes|changing|happened|history|previous|previously|before|used to|went (?:up|down)|"
+                      r"gone (?:up|down)|increase[ds]?|decrease[ds]?|raised|lowered|compare[ds]?|differ|different from)\b", re.I)
+
+
+def _previous_values(row, older) -> list:
+    """Earlier distinct values of the same row on the same page in older snapshots, newest first."""
+    out, seen = [], {rates.norm_value(row.values[0][1])}
+    for s in reversed(list(older)):
+        for r in s.rate_rows:
+            if r.key == row.key and r.page.path == row.page.path:
+                v = rates.norm_value(r.values[0][1])
+                if v not in seen:
+                    seen.add(v)
+                    out.append(r)
+                break
+    return out
+
+
+def rate_answer(q: str, snap, older=()) -> Answer:
     rq = rates.parse_query(q)
     res = rates.select(snap.rate_rows, rq) or rates.select(snap.prose_rows, rq)
     if res is None:
@@ -173,6 +223,13 @@ def rate_answer(q: str, snap) -> Answer:
     parts = [f"{r.display}: {r.value_str(rq.metrics)}" for r in res.rows]
     eff = f" (rates effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""
     text = "; ".join(parts) + eff + "."
+    if CHANGE_Q.search(q) and older:
+        # the member asked how it changed: add what the same page showed before (history is kept per snapshot)
+        prev = _previous_values(res.rows[0], older)
+        if prev:
+            text += " Previously: " + "; then ".join(
+                f"{p.value_str(rq.metrics)}" + (f" (effective {p.effective.strftime('%m/%d/%Y')})" if p.effective else
+                                                 f" (seen {p.page.taken_on.isoformat()})") for p in prev[:2]) + "."
     pages = []
     for u in [r.page.url for r in res.rows] + res.agreeing_pages:
         if u not in pages:
@@ -206,8 +263,9 @@ def entity_words(q: str) -> list:
     words = re.findall(r"[A-Za-z][A-Za-z'’.-]*", q)
     out = []
     for i, w in enumerate(words):
-        acronym = w.rstrip("s").isupper() or w.isupper()          # APRs, CDs, IRA, HSA
-        if w[0].isupper() and not acronym and w.lower().strip(".'’") not in GENERIC_CAPS and not (i == 0):
+        acronym = bool(re.match(r"^[A-Z]{2,}", w))                 # APRs, CDs, IRA, HSA, APY-wise
+        low = re.sub(r"['’](s|ve|m|ll|d|re)$", "", w.lower().strip(".'’"))
+        if w[0].isupper() and not acronym and low not in GENERIC_CAPS and low.rstrip("s") not in GENERIC_CAPS and not (i == 0):
             out.append(w.strip(".'’"))
     return out
 
