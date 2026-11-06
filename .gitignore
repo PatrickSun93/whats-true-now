@@ -1,0 +1,8 @@
+docs/
+kit/
+snapshots/
+snapshots_zip/
+.env
+*.key
+__pycache__/
+.venv/
