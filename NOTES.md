@@ -6,11 +6,19 @@ Submission folder: `solution/` (entry point `solution/solution.py`, `build()`).
 python harness/run_eval.py --submission solution --eval eval/public_eval.jsonl
 ```
 
-- **API keys:** none needed. The default is plain Python rules with no network or model calls. An optional LLM layer (DeepSeek, or a local Ollama model) can be switched on (see below).
+- **No API, no key, no network in the scored run.** See the next section.
 - **Packages:** none. Standard library only (`requirements.txt` is empty on purpose). Runs on Python 3.9+.
 - **Speed:** loading all five snapshots takes about 6 s. Each answer takes well under 0.1 s.
 - **Consistency:** answers are deterministic and cached per (question, as_of).
 - **Practice set:** 0.915 (starter: 0.093). The kit's selftest (`harness/selftest`, with its conflicts gold) scores 1.0.
+
+## No API in the scored run
+
+**Every score in this document comes from plain Python rules with zero network calls.** No LLM, no embedding model, no key.
+
+- The only network code is in `solution/llm.py` (an optional LLM rewrite) and `solution/embed.py` (optional local embeddings). Both are **off by default** and switch on only through `DUPACO_LLM=…` / `DUPACO_EMBED=ollama`. A key in the environment does not switch them on.
+- No key is in the repository. `.env` is git-ignored and never committed.
+- During development, model APIs were used for two things only, neither of which touches the submitted code path: generating 72 paraphrases of our own held-out questions as test data (DeepSeek and Claude), and measuring the optional layers (DeepSeek 0.911, Claude Opus 5.5 0.911, local Ollama 0.715, embeddings 0.907 against 0.915 rules-only). Those numbers are reported in the two "Optional …" sections below. Because none of them beat the rules, the submission runs with both layers off.
 
 ## The idea in one paragraph
 
