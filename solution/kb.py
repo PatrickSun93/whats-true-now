@@ -138,14 +138,6 @@ def clean_inline(text: str, keep_urls: bool = False) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
-HANDPICKED = re.compile(r"\n## (?:Handpicked for You|Related [^\n]*|You may also like)\n.*?(?=\n## |\Z)", re.S)
-
-
-def main_body(md: str) -> str:
-    """Drop the 'Handpicked for You' teaser blocks: they quote other (often old) articles."""
-    return HANDPICKED.sub("\n", md)
-
-
 # --------------------------------------------------------------------------------------
 # Data classes
 # --------------------------------------------------------------------------------------
@@ -305,8 +297,6 @@ def build_page(url: str, title: str, md: str, fetched_at: str, snapshot_id: str,
     page = PageRec(url=url, path=url_path(url), title=(title or "").replace(" | Dupaco", "").strip(),
                    snapshot_id=snapshot_id, taken_on=taken_on, fetched_at=fetched_at, kind=kind,
                    pub_date=article_date(url, md) if kind == ARTICLE else None)
-    body = main_body(md)
-    lines = body.split("\n")
-    page.tables = parse_tables(page, lines)
-    page.passages = parse_passages(page, body)
+    page.tables = parse_tables(page, md.split("\n"))
+    page.passages = parse_passages(page, md)
     return page

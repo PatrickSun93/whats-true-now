@@ -392,8 +392,8 @@ def eligible(row: RateRow, rq: RateQuery) -> Optional[float]:
             return None
         score += 3
     extra = (row.concepts & (VARIANT_NAMES | {"home_equity"})) - rq.variants - rq.products - {"roth", "traditional"}
-    if "business" in extra and rq.listing and rq.products == {"visa"}:
-        extra = extra - {"business"}     # "what cards do you offer" covers business cards too
+    if "business" in extra and rq.listing:
+        extra = extra - {"business"}     # a listing question ("what cards do you offer") covers the business versions too
     score -= 5 * len(extra)
     return score
 
@@ -484,6 +484,8 @@ def describe_source(t: Table) -> str:
 
 # ---------------------------------------------------------------------------------------
 # Rates written in prose ("6-month certificate APY: 3.50%"). Used only when no table row fits.
+# Never needed on the Dupaco snapshots (every rate there is in a table); the kit's selftest
+# publishes its rates this way.
 # ---------------------------------------------------------------------------------------
 EXPIRED = re.compile(r"offer (has )?ended|\bexpired?\b|no longer (available|offered)|\bended\b", re.I)
 METRIC_WORD = re.compile(r"\b(apy|apr|annual percentage (yield|rate)|dividend rate|interest rate|rate)\b", re.I)

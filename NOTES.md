@@ -26,29 +26,50 @@ We keep **every snapshot**, not just the latest. Each page version is tagged wit
 
 ## Rules for deciding what is current (each one is one sentence)
 
+The letters are the ones the code comments use. The rules are grouped by the kind of question they apply to; how many questions each one actually decides is measured in the ablation section below.
+
+**Every kind of question**
+
 | # | Rule |
 |---|---|
 | **A** | **Page authority:** rate sheet (`/rates`, `/business-rates`) > product page > promo landing page > calculator > downloaded document > news/blog article. |
-| **B** | **Qualifiers are part of the fact:** a row only answers if its term, model-year range and balance or loan-amount range fit the question. Every product word in the question must be on the row. 48-month ≠ 60-month, jumbo ≠ standard, rate ≠ APY, Roth ≠ Traditional. |
-| **C** | **Default tier:** variants the member didn't ask for (jumbo, IRA, business, refinance, intro or promotional, rate-relief) are left out when a plain version exists. Plain "savings" means Share Savings. "What cards do you offer" includes business cards. |
-| **D** | **Same row on several pages:** the table with the newest "Rates are effective as of" date wins. Ties go to the more authoritative page (rule A). Example: the calculator still shows 5.34% (effective 1/1/2026); the rate sheet shows 5.39% (effective 08/31/2026), so we answer 5.39%. |
-| **E** | **Not published = say so:** if no row fits (7/1 ARM, construction loan, VA loan, student-loan rates), we answer "isn't listed, please contact Dupaco" with `confident=False` and no numbers. |
+| **D** | **Same row on several pages:** the copy with the newest "Rates are effective as of" (or fee-schedule) date wins, and ties go to the more authoritative page (rule A). On these five crawls the most authoritative page is always also the newest one, so D never changes an answer or a conflict resolution here (the calculator's 5.34%, effective 1/1/2026, loses to the rate sheet's 5.39%, effective 08/31/2026, under rule A as well); it is kept for the case where a product page is updated before the rate sheet, and it is the order `conflicts()` reports. |
 | **F** | **as_of:** we answer from the newest snapshot taken on or before that date. With no `as_of`, we use the latest snapshot, unless the question itself names a past month ("as of May 2026", "what was … in June 2026"). |
 | **G** | **Freshest statement wins among equally relevant passages:** an article is true as of its publish date; an undated article counts as old; a product page is true as of the crawl. This is how "22 branch office locations" (newest press release) beats "23" and "24" in older ones. |
-| **H** | **"How many X":** we look at every passage that says "<number> … X" and group them by the wording after the number. The group that best matches the rest of the question wins. If the question adds nothing, the wording the site repeats most wins ("# branch office locations" beats "5,600 participating branches nationwide"). Then rule G applies. |
 | **I** | **Partial snapshots:** a snapshot missing more than 30% of the previous snapshot's pages is treated as an update, and the pages it doesn't mention are carried over. All five Dupaco snapshots are full crawls (each loses at most 8 pages), so this never fires on them. It matters for incremental feeds such as the kit's selftest. |
 | **J** | **Names must be in the evidence:** a branch, program or product name in the question must appear in the passage or rate row we quote. Otherwise we say it isn't listed, instead of answering about something else ("Mullan Avenue lobby hours", "Super Saver account", "Visa Signature"). |
-| **K** | **Expired offers:** a rate that appears only on a promo, calculator or article page is treated as ended when the official rate sheet for that product family is newer and no longer lists it. |
-| **L** | **Structured before searched:** fees, phone numbers, addresses and the routing number are read from the page's own structure (table rows, "Label: value" lines, address cards) into records, and a question of that type is answered from the record whose label covers it; copies are ranked by rule D. If no record fits, the question goes to passage search. Example: "Incoming wire transfer \| $10.00" answers "What is the fee for receiving a wire?" and not the $25 domestic row. |
+
+**Rate questions** (`solution/rates.py`)
+
+| # | Rule |
+|---|---|
+| **B** | **Qualifiers are part of the fact:** a row only answers if its term, model-year range and balance or loan-amount range fit the question. Every product word in the question must be on the row. 48-month ≠ 60-month, jumbo ≠ standard, rate ≠ APY, Roth ≠ Traditional. |
+| **C** | **Default tier:** variants the member didn't ask for (jumbo, IRA, business, refinance, intro or promotional, rate-relief) are left out when a plain version exists. |
+| **E** | **Not published = say so:** if no row fits (7/1 ARM, construction loan, VA loan, student-loan rates, a special that left the rate sheet), we answer "isn't listed, please contact Dupaco" with `confident=False` and no numbers. |
 | **M** | **A term makes a certificate:** a deposit row with a term in months and an APY is a certificate even if its label doesn't say so ("Regular IRAs — 60 Months" answers "60-month IRA certificate"). |
-| **N** | **A fee nobody states isn't listed:** when a fee question matches no record and the best passage names no amount at all, we say so (`confident=False`) instead of quoting unrelated text. (Refusing whenever the best passage is the fee schedule was tried and dropped: it refused real fees whose wording the records missed.) |
 | **O** | **"Which terms / tiers / specials do you have" is a rate question:** it is answered with every row of the product's winning table (rule D), one per line with its rate, so the list is as complete as the rate sheet ("Regular Certificates — 60 Month: 1.80% APY; 48 Month: …"). |
+
+**Fee, phone, address and routing-number questions** (`solution/facts.py`)
+
+| # | Rule |
+|---|---|
+| **L** | **Structured before searched:** fees, phone numbers, addresses and the routing number are read from the page's own structure (table rows, "Label: value" lines, address cards) into records, and a question of that type is answered from the record whose label covers it; copies are ranked by rule D. If no record fits, the question goes to passage search. Example: "Incoming wire transfer \| $10.00" answers "What is the fee for receiving a wire?" and not the $25 domestic row. |
+| **N** | **A fee nobody states isn't listed:** when a fee question matches no record and the best passage names no amount at all, we say so (`confident=False`) instead of quoting unrelated text. (Refusing whenever the best passage is the fee schedule was tried and dropped: it refused real fees whose wording the records missed.) |
+
+**Counting questions**
+
+| # | Rule |
+|---|---|
+| **H** | **"How many X":** we look at every passage that says "<number> … X" and group them by the wording after the number. The group that best matches the rest of the question wins. If the question adds nothing, the wording the site repeats most wins ("# branch office locations" beats "5,600 participating branches nationwide"). Then rule G applies. |
+
+There was a rule K ("a rate found only on a promo, calculator or article page has ended when the newer rate sheet drops it"). The ablation showed it never fired: a product that left the rate sheet has no row at all in the latest snapshot, so rule E already refuses it. It was removed.
 
 Smaller choices, all visible in the code:
 
 - When a rate question doesn't say APY or APR, we print both the rate and the APY or APR. When it does say, we print only that metric.
-- Rates written in sentences ("6-month certificate APY: 3.50%") are used only when no table row fits.
-- "Handpicked for You" teaser blocks are dropped, because they quote other, often old, articles.
+- Plain "savings" means Share Savings. No test question depends on it; without it a bare "savings rate" question would list every savings product.
+- A listing question ("what cards do you offer", "which certificates are available") keeps the business versions next to the personal ones instead of dropping them under rule C.
+- Rates written in sentences ("6-month certificate APY: 3.50%") are used only when no table row fits. Every Dupaco rate is in a table, so this never fires here; the kit's selftest publishes its rates as sentences, and its "offer ended" promo line is skipped.
 - Passage ranking multiplies BM25 by the page-kind weight and by the share of question words the passage covers. The first paragraphs of a page get a small boost, and very short button or nav labels are down-weighted.
 - The quoted snippet is the smallest set of sentences that covers the question words. A word found in many sentences of the passage counts as the topic, not the answer.
 - A question that asks how a rate *changed* ("what happened to … since May") gets the current value plus every earlier distinct value the same page showed, oldest first, each with its effective date. Every other question gets the current value only.
@@ -81,6 +102,22 @@ The practice set has no fee questions and only two contact questions, so we wrot
 What still misses: paraphrases whose wording drops the qualifier ("the cost to get a wire"), and words outside the site's vocabulary ("dormant", "notarized", "within the U.S."), which now get an "isn't listed" instead of a wrong fee.
 
 A second round of 54 questions targeted what the hidden set announces: values that changed between snapshots (home-loan rates move in every snapshot, auto rates and the special certificates in the last ones), stale copies on promo and calculator pages, balance tiers, products that left the rate sheet (25-month special, HELOC intro rate), list completeness and the promo-only Achieve Money Market. Scored before any change: as-of 20/20, stale 8/8, tiers 13/13, gone 4/4, but lists 0/4, promo 2/3 and change history 1.5/2. Rule O, the promo-column periods and the fuller change history fixed those (54/54) with the practice set unchanged question by question.
+
+## Which rules carry which questions (ablation)
+
+Each rule was switched off on its own (patched in memory, nothing changed on disk) and all five question sets were re-run: the practice set (40), the seed questions (39), round 2 (54), the paraphrases (72) and 70 reworded probes, 275 questions in all. The table gives the number of questions that lose score when the rule is off. Switching a rule off never gained a question.
+
+| Rule | Questions lost when off | Rule | Questions lost when off |
+|---|---|---|---|
+| B qualifiers | 50 (term / year / amount) + 35 (product words) | C default tier | 6 |
+| F as_of | 37 | O list questions | 4 |
+| L fact records | 30 | M a term makes a certificate | 3 |
+| E not published = say so | 15 | H "how many" | 2 |
+| A page authority | 6 | N unstated fee | 1 |
+| J names in the evidence | 6 | D newest date | 0 here; the 36 conflicts and the selftest are unchanged without it |
+| G freshest statement | 4 | I partial snapshots | 0 here; the kit's selftest drops from 1.0 to 0.83 without it |
+
+Among the smaller choices, the question-word coverage factor (7 questions), the change-history list (5) and the same-page second passage (4) matter most; the promo periods, the "non" negation, the fee synonyms and the search synonyms each carry one to three held-out questions. Three things changed nothing on any set: rule K and a filter that dropped "Handpicked for You" teaser blocks, both removed, and the prose rates, which stay because the kit's selftest needs them. "What cards do you offer" used to be a special case that kept business cards (one practice question); it is now the general listing choice above, with every score unchanged.
 
 ## Known misses on the practice set
 

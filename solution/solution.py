@@ -220,19 +220,7 @@ def rate_answer(q: str, snap, older=()) -> Answer:
     if any(n not in shown for n in names):
         return Answer(text="I don't see a published rate for that on Dupaco's website, so I can't quote one. "
                            "Please contact Dupaco directly for current details.", confident=False)
-    # Rule K (expired offer): a product found only on a promo / calculator / article page, while
-    # the official rate sheet for the same family is newer and no longer lists it, has ended.
     t = res.winner_table
-    if t.page.kind > kb.PRODUCT:
-        fam = (rq.products or set(res.rows[0].concepts)) & rates.PRODUCT_NAMES
-        newer = [x.table for x in snap.rate_rows if x.page.kind <= kb.PRODUCT and fam <= x.concepts
-                 and x.effective and (not t.effective or x.effective > t.effective)]
-        if newer:
-            when = f" (effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""
-            return Answer(text="That rate isn't on Dupaco's current rate sheet anymore — it only appears on an older "
-                               f"page{when}, so it may have ended. Please contact Dupaco to confirm current options.",
-                          sources=[Source(url=newer[0].page.url, snapshot_id=snap.snapshot_id)], confident=False,
-                          conflict_note=f"Only {kb.KIND_NAMES[t.page.kind]} {t.page.url} lists it.")
     period = "intro" if "intro" in rq.variants else "after" if "after_promo" in rq.variants else None
     parts = [f"{r.display}: {r.value_str(rq.metrics, period)}" for r in res.rows]
     eff = f" (rates effective {t.effective.strftime('%m/%d/%Y')})" if t.effective else ""

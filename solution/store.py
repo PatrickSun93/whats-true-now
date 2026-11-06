@@ -115,7 +115,7 @@ def build_index(snapshot) -> SnapshotIndex:
         seen.add(key)
         rec = kb.build_page(pg.url, pg.title, pg.markdown, pg.fetched_at, snapshot.snapshot_id, taken)
         idx.pages.append(rec)
-        body = kb.main_body(pg.markdown)
+        body = pg.markdown
         idx.hours.extend(parse_hours(rec, body))
         lines = body.split("\n")
         idx.facts.extend(facts.facts_from_lines(rec, lines))
